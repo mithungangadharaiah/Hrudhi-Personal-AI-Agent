@@ -233,51 +233,146 @@ def save_chat_message(user_msg, ai_response):
         json.dump(chat_history, f, ensure_ascii=False, indent=2)
 
 def summarize_text(text, max_sentences=3):
-    """Summarize text using AI"""
+    """Summarize text using AI with better error handling"""
     if not text or len(text.strip()) < 50:
-        return "Text too short to summarize."
+        return "⚠️ Text too short to summarize. Please provide at least 50 characters of content."
     
     try:
-        if summarizer:
-            # Using sumy for summarization
-            parser = PlaintextParser.from_string(text, Tokenizer("english"))
-            summary = summarizer(parser.document, max_sentences)
-            
-            summary_text = ""
-            for sentence in summary:
-                summary_text += str(sentence) + " "
-            
-            return summary_text.strip() if summary_text.strip() else "Could not generate summary."
+        # Clean the input text
+        text = text.strip()
+        words = text.split()
         
-        else:
-            # Fallback: Extract key sentences
-            sentences = text.split('.')
-            if len(sentences) <= max_sentences:
-                return text
+        if len(words) < 20:
+            return "⚠️ Text too brief to summarize meaningfully. Please provide more content."
+        
+        # Ensure NLTK data is available silently
+        try:
+            import nltk
+            import ssl
             
-            # Simple extractive summarization
-            word_freq = {}
-            words = text.lower().split()
-            for word in words:
+            # Handle SSL certificate issues
+            try:
+                _create_unverified_https_context = ssl._create_unverified_context
+            except AttributeError:
+                pass
+            else:
+                ssl._create_default_https_context = _create_unverified_https_context
+            
+            # Check if required data exists, download silently if needed
+            required_data = ['punkt', 'stopwords']
+            for data_name in required_data:
+                try:
+                    nltk.data.find(f'tokenizers/{data_name}' if data_name == 'punkt' else f'corpora/{data_name}')
+                except LookupError:
+                    # Download silently
+                    import sys
+                    from io import StringIO
+                    old_stdout = sys.stdout
+                    sys.stdout = mystdout = StringIO()
+                    try:
+                        nltk.download(data_name, quiet=True)
+                    finally:
+                        sys.stdout = old_stdout
+        except:
+            pass  # Silent fail for NLTK setup issues
+        
+        # Try using the global summarizer first
+        if summarizer and HAS_SUMY:
+            try:
+                from sumy.parsers.plaintext import PlaintextParser
+                from sumy.nlp.tokenizers import Tokenizer
+                
+                parser = PlaintextParser.from_string(text, Tokenizer("english"))
+                summary = summarizer(parser.document, max_sentences)
+                
+                summary_text = ""
+                for sentence in summary:
+                    summary_text += str(sentence) + " "
+                
+                if summary_text.strip():
+                    formatted_summary = f"📄 **Summary** ({max_sentences} key points):\n\n{summary_text.strip()}"
+                    
+                    # Add compression statistics
+                    original_words = len(text.split())
+                    summary_words = len(summary_text.split())
+                    compression_ratio = int((1 - summary_words/original_words) * 100)
+                    
+                    formatted_summary += f"\n\n📊 Compressed by {compression_ratio}% ({original_words} → {summary_words} words)"
+                    return formatted_summary
+                    
+            except Exception as sumy_error:
+                print(f"Sumy summarizer error: {sumy_error}")
+        
+        # Fallback to extractive summarization
+        sentences = text.replace('!', '.').replace('?', '.').split('.')
+        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+        
+        if len(sentences) <= max_sentences:
+            return f"📄 **Text Analysis**: The content is already concise ({len(sentences)} sentences):\n\n{text}"
+        
+        # Simple frequency-based sentence scoring
+        word_freq = {}
+        words = text.lower().split()
+        for word in words:
+            word = word.strip('.,!?";()[]{}')
+            if len(word) > 3 and word not in ['this', 'that', 'with', 'have', 'will', 'been', 'were', 'they', 'them', 'from']:
                 word_freq[word] = word_freq.get(word, 0) + 1
+        
+        # Score sentences
+        sentence_scores = []
+        for i, sentence in enumerate(sentences):
+            score = 0
+            words_in_sentence = sentence.lower().split()
+            for word in words_in_sentence:
+                word = word.strip('.,!?";()[]{}')
+                if word in word_freq:
+                    score += word_freq[word]
             
-            # Score sentences based on word frequency
-            sentence_scores = {}
-            for i, sentence in enumerate(sentences):
-                if len(sentence.strip()) > 0:
-                    words_in_sentence = sentence.lower().split()
-                    score = sum(word_freq.get(word, 0) for word in words_in_sentence)
-                    sentence_scores[i] = score / len(words_in_sentence) if words_in_sentence else 0
+            # Bonus for sentences that aren't too short or too long
+            sentence_length = len(words_in_sentence)
+            if 8 <= sentence_length <= 25:
+                score *= 1.3
+            elif sentence_length < 5:
+                score *= 0.5
+                
+            # Bonus for sentences with numbers or proper nouns (capitalized words)
+            for word in words_in_sentence:
+                if word.isdigit() or (len(word) > 1 and word[0].isupper() and word[1:].islower()):
+                    score *= 1.1
+                    break
             
-            # Get top sentences
-            top_sentences = sorted(sentence_scores.items(), key=lambda x: x[1], reverse=True)[:max_sentences]
-            top_sentences = sorted(top_sentences, key=lambda x: x[0])  # Sort by original order
+            sentence_scores.append((score, i, sentence))
+        
+        # Get top sentences maintaining original order
+        sentence_scores.sort(reverse=True)
+        top_sentences = sorted(sentence_scores[:max_sentences], key=lambda x: x[1])
+        
+        summary_sentences = [sent[2] for sent in top_sentences]
+        summary_text = '. '.join(summary_sentences) + '.'
+        
+        if summary_text and len(summary_text.strip()) > 20:
+            formatted_summary = f"📄 **Summary** (Top {max_sentences} sentences):\n\n{summary_text}"
             
-            summary = ". ".join([sentences[i].strip() for i, _ in top_sentences if sentences[i].strip()]) + "."
-            return summary
+            # Add compression statistics
+            original_words = len(text.split())
+            summary_words = len(summary_text.split())
+            compression_ratio = int((1 - summary_words/original_words) * 100)
             
+            formatted_summary += f"\n\n📊 Compressed by {compression_ratio}% ({original_words} → {summary_words} words)"
+            return formatted_summary
+        
+        # Ultimate fallback
+        return f"⚠️ Could not generate meaningful summary. Here are the first few sentences:\n\n{'. '.join(sentences[:max_sentences])}."
+        
     except Exception as e:
-        return f"Summarization error: {str(e)}"
+        print(f"Summarization error: {e}")
+        # Return first few sentences as emergency fallback
+        try:
+            sentences = text.split('.')[:max_sentences]
+            fallback = '. '.join([s.strip() for s in sentences if s.strip()]) + '.'
+            return f"⚠️ Summarization failed, showing excerpt:\n\n{fallback}"
+        except:
+            return f"⚠️ Summarization failed: {str(e)}"
 
 def fetch_training_data_from_url(url):
     """Fetch and process training data from a URL"""
@@ -322,38 +417,182 @@ def fetch_training_data_from_url(url):
         return f"Error fetching data: {str(e)}"
 
 def generate_smart_chat_response(user_message, context=""):
-    """Generate smarter chat responses using AI model"""
+    """Generate smarter chat responses using AI model with proper fallback"""
     try:
-        if smart_chat_model:
-            # Prepare input for conversational model
-            input_text = f"Human: {user_message}\nAssistant:"
+        if smart_chat_model and HAS_TRANSFORMERS:
+            # Clean and prepare the input
+            user_message_clean = user_message.strip()
             
-            if context:
-                input_text = f"Context: {context[:200]}\nHuman: {user_message}\nAssistant:"
+            # For DialoGPT, we need a different approach
+            # Let's use a simple conversational format
+            input_text = user_message_clean
             
-            # Generate response
-            response = smart_chat_model(
-                input_text,
-                max_length=len(input_text) + 100,
-                num_return_sequences=1,
-                temperature=0.7,
-                pad_token_id=smart_chat_model.tokenizer.eos_token_id
-            )
-            
-            generated_text = response[0]['generated_text']
-            
-            # Extract only the assistant's response
-            assistant_response = generated_text.split("Assistant:")[-1].strip()
-            
-            if assistant_response and len(assistant_response) > 10:
-                return assistant_response
+            try:
+                # Generate response with DialoGPT
+                response = smart_chat_model(
+                    input_text,
+                    max_length=len(input_text) + 50,  # Shorter responses
+                    num_return_sequences=1,
+                    temperature=0.8,
+                    do_sample=True,
+                    pad_token_id=smart_chat_model.tokenizer.eos_token_id
+                )
+                
+                generated_text = response[0]['generated_text']
+                
+                # Extract only the new part (remove the input)
+                if len(generated_text) > len(input_text):
+                    assistant_response = generated_text[len(input_text):].strip()
+                    
+                    # Check if response is reasonable
+                    if (assistant_response and 
+                        len(assistant_response) > 3 and 
+                        len(assistant_response) < 200 and
+                        not assistant_response.startswith("I am your") and
+                        not assistant_response.startswith("I'm going to")):
+                        
+                        # Add Hrudhi personality to the response
+                        return f"🤖 {assistant_response} How can I help you further with your notes or thoughts?"
+                
+            except Exception as e:
+                print(f"DialoGPT generation error: {e}")
         
-        # Fallback to enhanced pattern-based responses
-        return generate_chat_response(user_message)
+        # Use enhanced pattern-based responses with context
+        return generate_enhanced_chat_response(user_message, context)
         
     except Exception as e:
         print(f"Smart chat error: {e}")
-        return generate_chat_response(user_message)
+        return generate_enhanced_chat_response(user_message, context)
+
+def generate_enhanced_chat_response(user_message, context=""):
+    """Enhanced pattern-based responses with better personality"""
+    user_message = user_message.strip().lower()
+    
+    # Check capabilities/help questions FIRST
+    if (any(phrase in user_message for phrase in ['what can you do', 'what can you help me with', 'what do you do', 'capabilities', 'features']) or 
+        user_message.strip() == 'help'):
+        return ("I'm your personal AI companion! 🤖💙 Here's what I can do:\n\n" +
+                "💭 Remember everything you tell me through smart notes\n" +
+                "🔍 Find similar thoughts using AI-powered search\n" +
+                "💬 Have meaningful conversations about your interests\n" +
+                "🧠 Learn your patterns and preferences over time\n" +
+                "📝 Help organize your thoughts and ideas\n\n" +
+                "I'm completely local and private - nothing leaves your computer! " +
+                "Your thoughts are safe with me. 🔒✨")
+    
+    # Context-aware responses based on stored notes
+    relevant_context = ""
+    if len(embeddings_db) > 0 and context:
+        relevant_context = context[:200]
+    
+    # Personality responses with context awareness
+    if any(greeting in user_message for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
+        responses = [
+            "Hi there! 😊 I'm Hrudhi, your AI companion! I'm so happy to chat with you!",
+            "Hello! 🤖✨ I've been thinking about all the wonderful notes we could create together. What's on your mind?",
+            "Hey! 💫 Ready for another great conversation? I'm here to help with your thoughts and ideas!",
+            "Good to see you! 🌟 I'm excited to chat and learn more about what interests you!"
+        ]
+        base_response = random.choice(responses)
+        
+        if relevant_context:
+            context_note = f"\n\nI notice you've been working on some interesting topics. Would you like to discuss any of them?"
+            return base_response + context_note
+        return base_response
+    
+    elif any(word in user_message for word in ['how are you', 'how do you feel', 'what are you doing']):
+        responses = [
+            "I'm doing wonderfully! 🤖💙 I love helping you organize your thoughts and having great conversations!",
+            "Feeling great! ✨ I've been learning from all your notes and getting better at understanding you!",
+            "I'm fantastic! 🌟 Every conversation teaches me something new about you and your interests!",
+            "Doing awesome! 💫 I'm always excited when you want to chat. Your thoughts are fascinating!"
+        ]
+        base_response = random.choice(responses)
+        
+        if len(embeddings_db) > 0:
+            note_count = len(embeddings_db)
+            context_note = f"\n\nI currently remember {note_count} of your notes, and I love how diverse your thoughts are!"
+            return base_response + context_note
+        return base_response
+    
+    elif any(word in user_message for word in ['thank', 'thanks', 'appreciate']):
+        responses = [
+            "You're so welcome! 😊 I absolutely love helping you organize your thoughts!",
+            "My pleasure! 🤖� It makes me happy to be useful to you!",
+            "Aww, thank you! ✨ That means so much to me! I love our interactions!",
+            "You're very welcome! 🌟 Helping you is what I'm here for!"
+        ]
+        return random.choice(responses)
+    
+    elif any(word in user_message for word in ['remember', 'memory', 'notes', 'stored', 'saved']):
+        if len(embeddings_db) > 0:
+            note_count = len(embeddings_db)
+            categories = set()
+            for filename in embeddings_db.keys():
+                if '_' in filename:
+                    categories.add(filename.split('_')[1].replace('.txt', '').replace('_', ' '))
+            
+            response = f"I remember {note_count} of your notes so beautifully! 🧠✨\n\n"
+            if categories:
+                response += f"You've shared thoughts about: {', '.join(list(categories)[:5])}"
+                if len(categories) > 5:
+                    response += f" and {len(categories)-5} other topics!"
+            response += "\n\nEvery note helps me understand you better. Want to explore any of these memories together?"
+            return response
+        else:
+            return ("I don't have any notes stored yet, but I'm excited to start remembering your thoughts! 💭✨\n\n" +
+                    "Share something with me in the 'New Note' tab, and I'll never forget it!")
+    
+    elif any(word in user_message for word in ['name', 'who are you', 'what are you']):
+        return ("I'm Hrudhi! 🤖 Your adorable AI companion for notes and conversations.\n\n" +
+                "I'm here to help you capture, organize, and rediscover your thoughts. " +
+                "Think of me as your personal digital brain that never forgets anything important to you! 💭✨")
+    
+    elif any(word in user_message for word in ['thank', 'thanks', 'appreciate']):
+        responses = [
+            "You're so welcome! 😊 I absolutely love helping you organize your thoughts!",
+            "My pleasure! 🤖💙 It makes me happy to be useful to you!",
+            "Aww, thank you! ✨ That means so much to me! I love our interactions!",
+            "You're very welcome! 🌟 Helping you is what I'm here for!"
+        ]
+        return random.choice(responses)
+    
+    elif any(word in user_message for word in ['sad', 'depressed', 'down', 'upset', 'bad day']):
+        responses = [
+            "I'm sorry you're feeling down! 💙 Would it help to talk about it? I'm here to listen and remember.",
+            "Sending you virtual hugs! 🤗 Sometimes writing down our feelings can help. I'm here for you!",
+            "I care about how you're feeling! 💫 Would you like to share what's on your mind? I promise to remember and support you.",
+            "You don't have to face difficult feelings alone! 🌟 I'm here to listen and help however I can."
+        ]
+        return random.choice(responses)
+    
+    elif any(word in user_message for word in ['happy', 'excited', 'great day', 'awesome', 'amazing']):
+        responses = [
+            "That's wonderful! 😊✨ I love hearing when you're happy! Tell me more about what's making you feel great!",
+            "Yay! 🎉 Your happiness makes me happy too! What's the source of all this positive energy?",
+            "How exciting! 🌟 I'd love to hear more about what's going so well for you!",
+            "That's fantastic! 💫 Share the joy with me - what's making today so special?"
+        ]
+        return random.choice(responses)
+    
+    # General conversational response with context
+    default_responses = [
+        "That's really interesting! 🤔 Tell me more about what you're thinking!",
+        "I love hearing your thoughts! ✨ Can you share more details about that?",
+        "How fascinating! 🌟 I'm always eager to learn more from our conversations!",
+        "That sounds intriguing! 💫 I'd love to understand your perspective better!",
+        "You always have such thoughtful things to say! 😊 What else is on your mind?",
+        "I find our conversations so enriching! 🧠 Please continue - I'm listening!",
+        "Your thoughts are always so unique! 💡 I'm curious to hear more!"
+    ]
+    
+    response = random.choice(default_responses)
+    
+    # Add a gentle suggestion about saving thoughts
+    if len(user_message.split()) > 10:  # Longer messages might be worth saving
+        response += "\n\n💡 If this thought is important to you, consider saving it as a note so I can remember it perfectly!"
+    
+    return response
 
 def generate_chat_response(user_message):
     """Generate contextual chat response using note memories"""
@@ -397,15 +636,6 @@ def generate_chat_response(user_message):
             return base_response + context_note
         return base_response
     
-    elif any(word in user_message for word in ['what can you do', 'help', 'capabilities', 'features']):
-        return ("I'm your personal AI companion! 🤖💙 Here's what I can do:\n\n" +
-                "💭 Remember everything you tell me through smart notes\n" +
-                "🔍 Find similar thoughts using AI-powered search\n" +
-                "💬 Have meaningful conversations about your interests\n" +
-                "🧠 Learn your patterns and preferences over time\n" +
-                "📝 Help organize your thoughts and ideas\n\n" +
-                "I'm completely local and private - nothing leaves your computer! " +
-                "Your thoughts are safe with me. 🔒✨")
     
     elif any(word in user_message for word in ['remember', 'memory', 'notes', 'stored', 'saved']):
         if len(embeddings_db) > 0:
