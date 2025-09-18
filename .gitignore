@@ -4,9 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -28,11 +26,12 @@ ENV/
 env.bak/
 venv.bak/
 
-# PyInstaller
+# PyInstaller builds and distribution
+build/Hrudhi/
+build/pyinstaller_temp/
+dist/
 *.manifest
 *.spec
-build/
-dist/
 
 # IDE
 .vscode/
@@ -65,9 +64,11 @@ secrets.json
 api_keys.txt
 credentials.*
 
-# User Data (Notes and Embeddings)
+# User Data (Notes and Embeddings) - these are created at runtime
 HrudhiNotes/
 embeddings.json
+chat_history.json
+training_data.json
 *.notes
 
 # Temporary files
@@ -76,17 +77,29 @@ embeddings.json
 temp/
 tmp/
 
-# Model caches (these can be large)
+# AI Model caches (these can be large and are downloaded on first run)
 .cache/
+models/
+sentence_transformers_cache/
+.transformers_cache/
+huggingface_cache/
 
-# Large executables and installers (over 100MB)
+# Large executables and installers (over GitHub's 100MB limit)
 installer_standalone/
 installer_with_deps/
 *.exe
 Hrudhi.exe
 temp_installer/
 
+# Test and development files
+test_*.py
+*_test.py
+*_old.py
+backup/
+
 # Allow compressed installer (small enough for GitHub)
 !Hrudhi-AI-Agent-Installer.zip
-models/
-sentence_transformers_cache/
+
+# Build tools are kept for development
+!build/build_installer.py
+!build/build_standalone.py

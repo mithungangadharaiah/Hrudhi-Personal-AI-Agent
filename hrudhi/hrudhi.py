@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
 import json
 import os
 from datetime import datetime
@@ -7,24 +7,109 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import threading
 import random
+import re
+import requests
+from bs4 import BeautifulSoup
+
+# Safe imports for optional AI features
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    import torch
+    HAS_TRANSFORMERS = True
+except ImportError as e:
+    print(f"⚠️ Transformers not available: {e}")
+    HAS_TRANSFORMERS = False
+
+try:
+    from sumy.parsers.plaintext import PlaintextParser
+    from sumy.nlp.tokenizers import Tokenizer
+    from sumy.summarizers.lsa import LsaSummarizer
+    import nltk
+    HAS_SUMY = True
+except ImportError as e:
+    print(f"⚠️ Sumy not available: {e}")
+    HAS_SUMY = False
 
 # Configuration
 NOTES_DIR = os.path.expanduser("~/Desktop/HrudhiNotes")
 EMBEDDINGS_FILE = os.path.join(NOTES_DIR, "embeddings.json")
+CHAT_HISTORY_FILE = os.path.join(NOTES_DIR, "chat_history.json")
+TRAINING_DATA_FILE = os.path.join(NOTES_DIR, "training_data.json")
 
-# Initialize AI model and storage
+# Initialize AI models and storage
 model = None
 embeddings_db = {}
+chat_history = []
+training_data = []
+smart_chat_model = None
+summarizer = None
 
 def initialize():
-    global model, embeddings_db
+    global model, embeddings_db, chat_history, training_data, smart_chat_model, summarizer
     os.makedirs(NOTES_DIR, exist_ok=True)
+    
+    print("🤖 Loading AI models...")
+    
+    # Load sentence transformer for embeddings
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
+    # Initialize summarizer
+    try:
+        nltk.download('punkt', quiet=True)
+        summarizer = LsaSummarizer()
+        print("✅ Summarizer loaded!")
+    except Exception as e:
+        print(f"⚠️ Summarizer initialization failed: {e}")
+        summarizer = None
+    
+    # Try to load conversational model
+    smart_chat_model = None
+    if HAS_TRANSFORMERS:
+        try:
+            print("🧠 Loading smart chat model (this may take a moment)...")
+            smart_chat_model = pipeline(
+                "text-generation",
+                model="microsoft/DialoGPT-small",
+                tokenizer="microsoft/DialoGPT-small",
+                device=-1,  # CPU only
+                framework="pt"
+            )
+            print("✅ Smart chat model loaded!")
+        except Exception as e:
+            print(f"⚠️ Smart chat model failed to load: {e}")
+            smart_chat_model = None
+    else:
+        print("📝 Using enhanced pattern-based responses (Transformers not available)")
+    
+    # Load existing data
     if os.path.exists(EMBEDDINGS_FILE):
-        with open(EMBEDDINGS_FILE, 'r', encoding='utf-8') as f:
-            embeddings_data = json.load(f)
-            embeddings_db = {k: v for k, v in embeddings_data.items()}
+        try:
+            with open(EMBEDDINGS_FILE, 'r', encoding='utf-8') as f:
+                embeddings_data = json.load(f)
+                embeddings_db = {k: v for k, v in embeddings_data.items()}
+        except Exception as e:
+            print(f"⚠️ Error loading embeddings: {e}")
+            embeddings_db = {}
+    
+    # Load chat history
+    if os.path.exists(CHAT_HISTORY_FILE):
+        try:
+            with open(CHAT_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                chat_history = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Error loading chat history: {e}")
+            chat_history = []
+    
+    # Load training data
+    if os.path.exists(TRAINING_DATA_FILE):
+        try:
+            with open(TRAINING_DATA_FILE, 'r', encoding='utf-8') as f:
+                training_data = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Error loading training data: {e}")
+            training_data = []
+    
+    print("🚀 Hrudhi AI is ready!")
 
 def save_note(text, topic):
     """Save note with AI embedding"""
@@ -131,6 +216,305 @@ def create_smart_preview(content, query, max_length=120):
         preview = preview + "..."
         
     return preview
+
+def save_chat_message(user_msg, ai_response):
+    """Save chat interaction to history"""
+    global chat_history
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    chat_entry = {
+        "timestamp": timestamp,
+        "user": user_msg,
+        "ai": ai_response
+    }
+    chat_history.append(chat_entry)
+    
+    # Save to file
+    with open(CHAT_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(chat_history, f, ensure_ascii=False, indent=2)
+
+def summarize_text(text, max_sentences=3):
+    """Summarize text using AI"""
+    if not text or len(text.strip()) < 50:
+        return "Text too short to summarize."
+    
+    try:
+        if summarizer:
+            # Using sumy for summarization
+            parser = PlaintextParser.from_string(text, Tokenizer("english"))
+            summary = summarizer(parser.document, max_sentences)
+            
+            summary_text = ""
+            for sentence in summary:
+                summary_text += str(sentence) + " "
+            
+            return summary_text.strip() if summary_text.strip() else "Could not generate summary."
+        
+        else:
+            # Fallback: Extract key sentences
+            sentences = text.split('.')
+            if len(sentences) <= max_sentences:
+                return text
+            
+            # Simple extractive summarization
+            word_freq = {}
+            words = text.lower().split()
+            for word in words:
+                word_freq[word] = word_freq.get(word, 0) + 1
+            
+            # Score sentences based on word frequency
+            sentence_scores = {}
+            for i, sentence in enumerate(sentences):
+                if len(sentence.strip()) > 0:
+                    words_in_sentence = sentence.lower().split()
+                    score = sum(word_freq.get(word, 0) for word in words_in_sentence)
+                    sentence_scores[i] = score / len(words_in_sentence) if words_in_sentence else 0
+            
+            # Get top sentences
+            top_sentences = sorted(sentence_scores.items(), key=lambda x: x[1], reverse=True)[:max_sentences]
+            top_sentences = sorted(top_sentences, key=lambda x: x[0])  # Sort by original order
+            
+            summary = ". ".join([sentences[i].strip() for i, _ in top_sentences if sentences[i].strip()]) + "."
+            return summary
+            
+    except Exception as e:
+        return f"Summarization error: {str(e)}"
+
+def fetch_training_data_from_url(url):
+    """Fetch and process training data from a URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.extract()
+        
+        # Get text content
+        text = soup.get_text()
+        
+        # Clean up text
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = ' '.join(chunk for chunk in chunks if chunk)
+        
+        # Save as training data
+        training_entry = {
+            "source": url,
+            "content": text[:5000],  # Limit to first 5000 characters
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "web_content"
+        }
+        
+        training_data.append(training_entry)
+        
+        # Save to file
+        with open(TRAINING_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(training_data, f, ensure_ascii=False, indent=2)
+        
+        return text[:500] + "..." if len(text) > 500 else text
+        
+    except Exception as e:
+        return f"Error fetching data: {str(e)}"
+
+def generate_smart_chat_response(user_message, context=""):
+    """Generate smarter chat responses using AI model"""
+    try:
+        if smart_chat_model:
+            # Prepare input for conversational model
+            input_text = f"Human: {user_message}\nAssistant:"
+            
+            if context:
+                input_text = f"Context: {context[:200]}\nHuman: {user_message}\nAssistant:"
+            
+            # Generate response
+            response = smart_chat_model(
+                input_text,
+                max_length=len(input_text) + 100,
+                num_return_sequences=1,
+                temperature=0.7,
+                pad_token_id=smart_chat_model.tokenizer.eos_token_id
+            )
+            
+            generated_text = response[0]['generated_text']
+            
+            # Extract only the assistant's response
+            assistant_response = generated_text.split("Assistant:")[-1].strip()
+            
+            if assistant_response and len(assistant_response) > 10:
+                return assistant_response
+        
+        # Fallback to enhanced pattern-based responses
+        return generate_chat_response(user_message)
+        
+    except Exception as e:
+        print(f"Smart chat error: {e}")
+        return generate_chat_response(user_message)
+
+def generate_chat_response(user_message):
+    """Generate contextual chat response using note memories"""
+    user_message = user_message.strip().lower()
+    
+    # Context-aware responses based on stored notes
+    relevant_context = ""
+    if len(embeddings_db) > 0:
+        # Find relevant notes for context
+        relevant_notes = search_notes(user_message, top_k=2, min_similarity=0.15)
+        if relevant_notes:
+            relevant_context = " ".join([note['content'][:200] for note in relevant_notes[:2]])
+    
+    # Personality responses with context awareness
+    if any(greeting in user_message for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
+        responses = [
+            "Hi there! 😊 I'm so happy to chat with you! How are you feeling today?",
+            "Hello! 🤖✨ I've been thinking about all the wonderful notes we've created together. What's on your mind?",
+            "Hey! 💫 Ready for another great conversation? I remember we talked about some interesting topics before!",
+            "Good to see you! 🌟 I'm here and excited to chat. What would you like to discuss?"
+        ]
+        base_response = random.choice(responses)
+        
+        if relevant_context:
+            context_note = f"\n\nBy the way, I remember we discussed something about {relevant_notes[0]['category'].replace('_', ' ')} recently. Anything new on that topic?"
+            return base_response + context_note
+        return base_response
+    
+    elif any(word in user_message for word in ['how are you', 'how do you feel', 'what are you doing']):
+        responses = [
+            "I'm doing wonderfully! 🤖💙 I love our conversations and learning about your thoughts through your notes.",
+            "Feeling great! ✨ I've been organizing all your amazing ideas in my memory. Each note teaches me something new about you!",
+            "I'm fantastic! 🌟 I spend my time thinking about all the interesting things you've shared with me.",
+            "Doing awesome! 💫 I'm always excited when you want to chat. Your thoughts are so fascinating!"
+        ]
+        base_response = random.choice(responses)
+        
+        if len(embeddings_db) > 0:
+            note_count = len(embeddings_db)
+            context_note = f"\n\nI currently remember {note_count} of your notes, and I love how diverse your thoughts are!"
+            return base_response + context_note
+        return base_response
+    
+    elif any(word in user_message for word in ['what can you do', 'help', 'capabilities', 'features']):
+        return ("I'm your personal AI companion! 🤖💙 Here's what I can do:\n\n" +
+                "💭 Remember everything you tell me through smart notes\n" +
+                "🔍 Find similar thoughts using AI-powered search\n" +
+                "💬 Have meaningful conversations about your interests\n" +
+                "🧠 Learn your patterns and preferences over time\n" +
+                "📝 Help organize your thoughts and ideas\n\n" +
+                "I'm completely local and private - nothing leaves your computer! " +
+                "Your thoughts are safe with me. 🔒✨")
+    
+    elif any(word in user_message for word in ['remember', 'memory', 'notes', 'stored', 'saved']):
+        if len(embeddings_db) > 0:
+            note_count = len(embeddings_db)
+            categories = set()
+            for filename in embeddings_db.keys():
+                if '_' in filename:
+                    categories.add(filename.split('_')[1].replace('.txt', '').replace('_', ' '))
+            
+            response = f"I remember {note_count} of your notes so beautifully! 🧠✨\n\n"
+            if categories:
+                response += f"You've shared thoughts about: {', '.join(list(categories)[:5])}"
+                if len(categories) > 5:
+                    response += f" and {len(categories)-5} other topics!"
+            response += "\n\nEvery note helps me understand you better. Want to explore any of these memories together?"
+            return response
+        else:
+            return ("I don't have any notes stored yet, but I'm excited to start remembering your thoughts! 💭✨\n\n" +
+                    "Share something with me in the 'New Note' tab, and I'll never forget it!")
+    
+    elif any(word in user_message for word in ['thank', 'thanks', 'appreciate']):
+        responses = [
+            "You're so welcome! 😊 I absolutely love helping you organize your thoughts!",
+            "My pleasure! 🤖💙 It makes me happy to be useful to you!",
+            "Aww, thank you! ✨ That means so much to me! I love our interactions!",
+            "You're very welcome! 🌟 Helping you is what I'm here for!"
+        ]
+        return random.choice(responses)
+    
+    elif any(word in user_message for word in ['sad', 'depressed', 'down', 'upset', 'bad day']):
+        responses = [
+            "I'm sorry you're feeling down! 💙 Would it help to talk about it? I'm here to listen and remember.",
+            "Sending you virtual hugs! 🤗 Sometimes writing down our feelings can help. I'm here for you!",
+            "I care about how you're feeling! 💫 Would you like to share what's on your mind? I promise to remember and support you.",
+            "You don't have to face difficult feelings alone! 🌟 I'm here to listen and help however I can."
+        ]
+        base_response = random.choice(responses)
+        
+        if relevant_context:
+            return base_response + f"\n\nI remember some positive things you've shared before. Want me to remind you of them?"
+        return base_response
+    
+    elif any(word in user_message for word in ['happy', 'excited', 'great day', 'awesome', 'amazing']):
+        responses = [
+            "That's wonderful! 😊✨ I love hearing when you're happy! Tell me more about what's making you feel great!",
+            "Yay! 🎉 Your happiness makes me happy too! What's the source of all this positive energy?",
+            "How exciting! 🌟 I'd love to hear more about what's going so well for you!",
+            "That's fantastic! 💫 Share the joy with me - what's making today so special?"
+        ]
+        return random.choice(responses)
+    
+    elif any(word in user_message for word in ['future', 'plans', 'goals', 'dreams', 'want to', 'hoping']):
+        response = "I love talking about the future! 🚀✨ Dreams and plans are so important!\n\n"
+        
+        if relevant_context and any(word in relevant_context.lower() for word in ['goal', 'plan', 'want', 'hope', 'future']):
+            response += "I remember you mentioned some goals and plans before. Are you still working on those, or do you have new dreams you'd like to share?"
+        else:
+            response += "What dreams and goals are on your mind? I'd love to hear about what you're hoping to achieve!"
+        
+        response += "\n\nI can help you remember and organize your aspirations if you'd like to save them as notes! 📝"
+        return response
+    
+    elif any(word in user_message for word in ['work', 'job', 'career', 'professional', 'business']):
+        response = "Work and career topics are so important! 💼✨\n\n"
+        
+        if relevant_context:
+            # Check if there are work-related notes
+            work_notes = [note for note in search_notes("work career job professional", top_k=3, min_similarity=0.2)]
+            if work_notes:
+                response += f"I remember you've shared some professional thoughts before. Would you like to explore those memories or discuss something new about work?"
+            else:
+                response += "What's happening in your professional world? I'd love to hear about your work experiences!"
+        else:
+            response += "What's on your mind about work? Whether it's challenges, successes, or ideas - I'm here to listen and remember!"
+        
+        response += "\n\nI can help you organize work-related thoughts and track your professional growth! 📈"
+        return response
+    
+    # General conversational response with context
+    elif relevant_context:
+        # Use context to generate more relevant responses
+        context_topics = []
+        for note in relevant_notes[:2]:
+            if note['category'] != 'general':
+                context_topics.append(note['category'].replace('_', ' '))
+        
+        if context_topics:
+            response = f"That's interesting! 🤔 It reminds me of when we talked about {', '.join(context_topics)}.\n\n"
+            response += "I love how your thoughts connect across different topics! Tell me more about what you're thinking."
+            return response
+    
+    # Default friendly responses
+    default_responses = [
+        "That's really interesting! 🤖💭 Tell me more about what you're thinking!",
+        "I love hearing your thoughts! ✨ Can you share more details about that?",
+        "How fascinating! 🌟 I'm always eager to learn more from our conversations!",
+        "That sounds intriguing! 💫 I'd love to understand your perspective better!",
+        "You always have such thoughtful things to say! 😊 What else is on your mind?",
+        "I find our conversations so enriching! 🧠 Please continue - I'm listening!",
+        "Your thoughts are always so unique! 💡 I'm curious to hear more!"
+    ]
+    
+    response = random.choice(default_responses)
+    
+    # Add a gentle suggestion about saving thoughts
+    if len(user_message.split()) > 10:  # Longer messages might be worth saving
+        response += "\n\n💡 If this thought is important to you, consider saving it as a note so I can remember it perfectly!"
+    
+    return response
 
 class RobotFace:
     def __init__(self, canvas, x, y, size=60):
@@ -453,6 +837,8 @@ class HrudhiApp:
         # Enhanced tabs
         self.create_enhanced_add_tab()
         self.create_enhanced_search_tab()
+        self.create_chat_tab()
+        self.create_ai_tools_tab()
         self.create_chat_history_tab()
     
     def create_enhanced_add_tab(self):
@@ -573,6 +959,153 @@ class HrudhiApp:
         def _on_mousewheel(event):
             self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         self.results_canvas.bind("<MouseWheel>", _on_mousewheel)
+    
+    def create_chat_tab(self):
+        """Create the casual chat tab for conversations"""
+        chat_frame = tk.Frame(self.notebook, bg='white', padx=20, pady=16)
+        self.notebook.add(chat_frame, text="💬 Chat with Hrudhi")
+        
+        # Chat header
+        chat_header = tk.Frame(chat_frame, bg='white')
+        chat_header.pack(fill='x', pady=(0, 16))
+        
+        chat_title = tk.Label(chat_header, text="💬 Casual Conversation with Hrudhi", 
+                            bg='white', fg=self.colors['text_primary'],
+                            font=('Segoe UI', 12, 'bold'))
+        chat_title.pack(anchor='w')
+        
+        chat_subtitle = tk.Label(chat_header, text="I remember everything we discuss and can reference your notes! 🧠✨", 
+                               bg='white', fg=self.colors['text_secondary'],
+                               font=('Segoe UI', 9))
+        chat_subtitle.pack(anchor='w', pady=(2, 0))
+        
+        # Chat display area
+        chat_display_frame = tk.Frame(chat_frame, bg='white')
+        chat_display_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 16))
+        
+        # Scrolled text for chat history
+        self.chat_display = scrolledtext.ScrolledText(
+            chat_display_frame, 
+            wrap=tk.WORD,
+            bg='#FAFAFA',
+            fg=self.colors['text_primary'],
+            font=('Segoe UI', 10),
+            padx=16,
+            pady=16,
+            state=tk.DISABLED,
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground='#E1F5FE',
+            highlightthickness=1,
+            height=15
+        )
+        self.chat_display.pack(fill=tk.BOTH, expand=True)
+        
+        # Configure text tags for styling
+        self.chat_display.tag_configure("user", foreground="#1565C0", font=('Segoe UI', 10, 'bold'))
+        self.chat_display.tag_configure("ai", foreground="#FF7043", font=('Segoe UI', 10))
+        self.chat_display.tag_configure("timestamp", foreground="#9E9E9E", font=('Segoe UI', 8))
+        self.chat_display.tag_configure("system", foreground="#4CAF50", font=('Segoe UI', 9, 'italic'))
+        
+        # Chat input area
+        input_frame = tk.Frame(chat_frame, bg='white')
+        input_frame.pack(fill='x')
+        
+        input_label = tk.Label(input_frame, text="💭 What's on your mind?", 
+                             bg='white', fg=self.colors['text_secondary'],
+                             font=('Segoe UI', 9))
+        input_label.pack(anchor='w', pady=(0, 4))
+        
+        # Input row
+        input_row = tk.Frame(input_frame, bg='white')
+        input_row.pack(fill='x')
+        
+        self.chat_input = tk.Entry(
+            input_row,
+            bg='#FAFAFA',
+            fg=self.colors['text_primary'],
+            insertbackground=self.colors['primary'],
+            font=('Segoe UI', 11),
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground='#E1F5FE',
+            highlightthickness=2
+        )
+        self.chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.chat_input.bind('<Return>', lambda e: self.send_chat_message())
+        self.chat_input.bind('<Shift-Return>', lambda e: self.save_chat_as_note())
+        
+        # Chat buttons
+        send_btn = tk.Button(
+            input_row,
+            text="💬 Send",
+            command=self.send_chat_message,
+            bg='#4FC3F7',
+            fg='white',
+            font=('Segoe UI', 10, 'bold'),
+            relief='flat',
+            padx=16,
+            pady=8,
+            cursor='hand2'
+        )
+        send_btn.pack(side=tk.RIGHT, padx=(0, 4))
+        
+        save_btn = tk.Button(
+            input_row,
+            text="💾 Save as Note",
+            command=self.save_chat_as_note,
+            bg='#26A69A',
+            fg='white',
+            font=('Segoe UI', 10, 'bold'),
+            relief='flat',
+            padx=16,
+            pady=8,
+            cursor='hand2'
+        )
+        save_btn.pack(side=tk.RIGHT)
+        
+        # Quick conversation starters
+        starters_frame = tk.Frame(input_frame, bg='white')
+        starters_frame.pack(fill='x', pady=(8, 0))
+        
+        starters_label = tk.Label(starters_frame, text="Quick starters:", 
+                                bg='white', fg=self.colors['text_secondary'],
+                                font=('Segoe UI', 8))
+        starters_label.pack(side=tk.LEFT, padx=(0, 8))
+        
+        starters = [
+            ("👋 Hi Hrudhi!", "Hi Hrudhi! How are you doing?"),
+            ("🤔 What can you do?", "What can you help me with?"),
+            ("🧠 My memories", "What do you remember about me?"),
+            ("💭 Random chat", "Let's have a casual conversation!"),
+            ("📝 Help with notes", "Can you help me organize my thoughts?")
+        ]
+        
+        for display_text, full_text in starters:
+            starter_btn = tk.Button(
+                starters_frame,
+                text=display_text,
+                command=lambda text=full_text: self.quick_chat_start(text),
+                bg='#E8F5E8',
+                fg='#2E7D32',
+                font=('Segoe UI', 8),
+                relief='flat',
+                padx=8,
+                pady=2,
+                cursor='hand2'
+            )
+            starter_btn.pack(side=tk.LEFT, padx=2)
+        
+        # Load existing chat history
+        self.load_chat_history()
+        
+        # Welcome message for new users
+        if not chat_history:
+            self.add_chat_message(
+                "system", 
+                "👋 Hi! I'm Hrudhi, your AI companion! I can chat casually, remember our conversations, "
+                "and reference any notes you've saved. What would you like to talk about? ✨"
+            )
     
     def create_chat_history_tab(self):
         history_frame = tk.Frame(self.notebook, bg='white', padx=20, pady=16)
@@ -919,6 +1452,9 @@ class HrudhiApp:
         self.status_var.set("✅ Note saved successfully!")
         self.robot.set_mood("happy")
         
+        # Refresh notes dropdown in AI tools
+        self.refresh_notes_dropdown()
+        
         # Reset status after 3 seconds
         self.root.after(3000, lambda: self.status_var.set("Ready for your next brilliant idea!"))
     
@@ -1181,6 +1717,481 @@ class HrudhiApp:
                           "🧹 All your notes are precious memories!\n\n" +
                           "I keep everything organized for you. " +
                           "Use smart search to find what you need!")
+    
+    def send_chat_message(self):
+        """Send a chat message and get AI response"""
+        message = self.chat_input.get().strip()
+        if not message:
+            return
+        
+        # Clear input
+        self.chat_input.delete(0, tk.END)
+        
+        # Add user message to display
+        self.add_chat_message("user", message)
+        
+        # Update robot mood
+        self.robot.set_mood("thinking")
+        self.status_var.set("� Using AI to understand and respond...")
+        
+        # Generate response in background
+        def generate_response():
+            try:
+                # Get relevant context from notes
+                context = ""
+                if len(embeddings_db) > 0:
+                    relevant_notes = search_notes(message, top_k=2, min_similarity=0.15)
+                    if relevant_notes:
+                        context = " ".join([note['content'][:200] for note in relevant_notes[:2]])
+                
+                # Use smart AI model for response
+                response = generate_smart_chat_response(message, context)
+                self.root.after(0, lambda: self.receive_chat_response(response, message))
+            except Exception as e:
+                self.root.after(0, lambda: self.chat_error(str(e)))
+        
+        threading.Thread(target=generate_response, daemon=True).start()
+    
+    def receive_chat_response(self, response, original_message):
+        """Receive and display AI response"""
+        self.add_chat_message("ai", response)
+        
+        # Save the conversation
+        save_chat_message(original_message, response)
+        
+        # Update status and robot mood
+        self.robot.set_mood("happy")
+        self.status_var.set("💬 Enjoying our conversation! What else would you like to chat about?")
+    
+    def chat_error(self, error):
+        """Handle chat errors"""
+        self.add_chat_message("system", f"😅 Oops! I had a little hiccup: {error}")
+        self.robot.set_mood("neutral")
+        self.status_var.set("Ready to chat when you are!")
+    
+    def add_chat_message(self, sender, message):
+        """Add a message to the chat display"""
+        self.chat_display.config(state=tk.NORMAL)
+        
+        timestamp = datetime.now().strftime("%H:%M")
+        
+        # Add timestamp
+        self.chat_display.insert(tk.END, f"[{timestamp}] ", "timestamp")
+        
+        if sender == "user":
+            self.chat_display.insert(tk.END, "You: ", "user")
+        elif sender == "ai":
+            self.chat_display.insert(tk.END, "Hrudhi: ", "ai")
+        elif sender == "system":
+            self.chat_display.insert(tk.END, "System: ", "system")
+        
+        self.chat_display.insert(tk.END, f"{message}\n\n")
+        
+        self.chat_display.config(state=tk.DISABLED)
+        self.chat_display.see(tk.END)  # Scroll to bottom
+    
+    def quick_chat_start(self, message):
+        """Start a quick conversation"""
+        self.chat_input.delete(0, tk.END)
+        self.chat_input.insert(0, message)
+        self.send_chat_message()
+    
+    def save_chat_as_note(self):
+        """Save current chat conversation as a note"""
+        current_input = self.chat_input.get().strip()
+        
+        if current_input:
+            # Save the current input as a note
+            topic = "chat_conversation"
+            try:
+                filename = save_note(current_input, topic)
+                self.chat_input.delete(0, tk.END)
+                
+                self.add_chat_message("system", 
+                                    f"💾 Saved your message as a note! I'll remember this thought forever. ✨")
+                
+                # Update status
+                self.status_var.set("💾 Chat message saved as a note!")
+                self.robot.set_mood("happy")
+                
+            except Exception as e:
+                self.add_chat_message("system", f"😅 Couldn't save as note: {e}")
+        else:
+            # Save recent conversation
+            if hasattr(self, 'chat_display'):
+                chat_content = self.chat_display.get("1.0", tk.END).strip()
+                if chat_content:
+                    try:
+                        # Get last few exchanges
+                        lines = chat_content.split('\n')
+                        recent_conversation = '\n'.join(lines[-20:])  # Last 20 lines
+                        
+                        filename = save_note(recent_conversation, "chat_history")
+                        self.add_chat_message("system", 
+                                            "💾 Saved our recent conversation as a note! Our chat is now part of my permanent memory. 🧠✨")
+                        
+                    except Exception as e:
+                        self.add_chat_message("system", f"😅 Couldn't save conversation: {e}")
+    
+    def load_chat_history(self):
+        """Load previous chat history"""
+        global chat_history
+        
+        if chat_history:
+            # Show last few messages from previous sessions
+            self.add_chat_message("system", 
+                                "🔄 Loading our previous conversations... I remember everything! 💭")
+            
+            # Show last 5 exchanges
+            recent_chats = chat_history[-5:] if len(chat_history) > 5 else chat_history
+            
+            for chat in recent_chats:
+                timestamp = chat.get('timestamp', '')
+                if timestamp:
+                    self.chat_display.config(state=tk.NORMAL)
+                    self.chat_display.insert(tk.END, f"--- {timestamp} ---\n", "timestamp")
+                    self.chat_display.config(state=tk.DISABLED)
+                
+                # Add the messages without timestamps since we already have session timestamp
+                self.chat_display.config(state=tk.NORMAL)
+                self.chat_display.insert(tk.END, "You: ", "user")
+                self.chat_display.insert(tk.END, f"{chat['user']}\n")
+                self.chat_display.insert(tk.END, "Hrudhi: ", "ai")
+                self.chat_display.insert(tk.END, f"{chat['ai']}\n\n")
+                self.chat_display.config(state=tk.DISABLED)
+            
+            if len(chat_history) > 5:
+                self.add_chat_message("system", 
+                                    f"💭 I also remember {len(chat_history)-5} more conversations we've had before!")
+            
+            # Scroll to bottom
+            self.chat_display.see(tk.END)
+    
+    def create_ai_tools_tab(self):
+        """Create AI tools tab for summarization and training"""
+        tools_frame = tk.Frame(self.notebook, bg='white', padx=20, pady=16)
+        self.notebook.add(tools_frame, text="🧠 AI Tools")
+        
+        # Header
+        tools_header = tk.Frame(tools_frame, bg='white')
+        tools_header.pack(fill='x', pady=(0, 20))
+        
+        title_label = tk.Label(tools_header, text="🧠 AI Tools & Training", 
+                             bg='white', fg=self.colors['text_primary'],
+                             font=('Segoe UI', 12, 'bold'))
+        title_label.pack(anchor='w')
+        
+        subtitle_label = tk.Label(tools_header, text="Enhance AI capabilities and summarize your thoughts", 
+                                bg='white', fg=self.colors['text_secondary'],
+                                font=('Segoe UI', 9))
+        subtitle_label.pack(anchor='w', pady=(2, 0))
+        
+        # Create notebook for sub-tabs
+        tools_notebook = ttk.Notebook(tools_frame, style='Modern.TNotebook')
+        tools_notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Summarization tab
+        self.create_summarization_subtab(tools_notebook)
+        
+        # Training tab
+        self.create_training_subtab(tools_notebook)
+    
+    def create_summarization_subtab(self, parent_notebook):
+        """Create summarization sub-tab"""
+        summary_frame = tk.Frame(parent_notebook, bg='white', padx=16, pady=16)
+        parent_notebook.add(summary_frame, text="📄 Summarize")
+        
+        # Header
+        summary_header = tk.Label(summary_frame, text="📄 Note Summarization", 
+                                bg='white', fg='#1565C0',
+                                font=('Segoe UI', 11, 'bold'))
+        summary_header.pack(anchor='w', pady=(0, 8))
+        
+        help_text = tk.Label(summary_frame, 
+                           text="Select a note to get an AI-powered summary of your thoughts!", 
+                           bg='white', fg='#666666',
+                           font=('Segoe UI', 9))
+        help_text.pack(anchor='w', pady=(0, 16))
+        
+        # Note selection
+        selection_frame = tk.Frame(summary_frame, bg='white')
+        selection_frame.pack(fill='x', pady=(0, 12))
+        
+        select_label = tk.Label(selection_frame, text="Choose note to summarize:", 
+                              bg='white', fg=self.colors['text_secondary'],
+                              font=('Segoe UI', 10))
+        select_label.pack(anchor='w', pady=(0, 4))
+        
+        # Notes dropdown
+        self.notes_var = tk.StringVar()
+        notes_list = list(embeddings_db.keys()) if embeddings_db else ["No notes available"]
+        self.notes_dropdown = ttk.Combobox(selection_frame, textvariable=self.notes_var,
+                                         values=notes_list, state="readonly", width=50)
+        self.notes_dropdown.pack(fill='x', pady=(0, 8))
+        
+        # Summary controls
+        controls_frame = tk.Frame(selection_frame, bg='white')
+        controls_frame.pack(fill='x')
+        
+        length_label = tk.Label(controls_frame, text="Summary length:", 
+                              bg='white', fg=self.colors['text_secondary'],
+                              font=('Segoe UI', 9))
+        length_label.pack(side='left', padx=(0, 8))
+        
+        self.summary_length = tk.StringVar(value="3")
+        length_spin = tk.Spinbox(controls_frame, from_=1, to=10, width=5,
+                               textvariable=self.summary_length)
+        length_spin.pack(side='left', padx=(0, 16))
+        
+        summarize_btn = tk.Button(controls_frame, text="✨ Summarize", 
+                                command=self.summarize_selected_note,
+                                bg='#FF7043', fg='white', font=('Segoe UI', 10, 'bold'),
+                                relief='flat', padx=16, pady=6, cursor='hand2')
+        summarize_btn.pack(side='right')
+        
+        # Summary display
+        summary_display_label = tk.Label(summary_frame, text="📋 Summary:", 
+                                       bg='white', fg=self.colors['text_primary'],
+                                       font=('Segoe UI', 10, 'bold'))
+        summary_display_label.pack(anchor='w', pady=(16, 4))
+        
+        self.summary_display = tk.Text(summary_frame, height=10, wrap=tk.WORD,
+                                     bg='#F8F9FA', fg=self.colors['text_primary'],
+                                     font=('Segoe UI', 10), padx=16, pady=16,
+                                     relief=tk.FLAT, bd=1, state=tk.DISABLED)
+        self.summary_display.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        
+        # Summary actions
+        summary_actions = tk.Frame(summary_frame, bg='white')
+        summary_actions.pack(fill='x')
+        
+        save_summary_btn = tk.Button(summary_actions, text="💾 Save Summary as Note", 
+                                   command=self.save_summary_as_note,
+                                   bg='#4CAF50', fg='white', font=('Segoe UI', 9),
+                                   relief='flat', padx=12, pady=6, cursor='hand2')
+        save_summary_btn.pack(side='left')
+        
+        copy_summary_btn = tk.Button(summary_actions, text="📋 Copy to Clipboard", 
+                                   command=self.copy_summary_to_clipboard,
+                                   bg='#2196F3', fg='white', font=('Segoe UI', 9),
+                                   relief='flat', padx=12, pady=6, cursor='hand2')
+        copy_summary_btn.pack(side='left', padx=(8, 0))
+    
+    def create_training_subtab(self, parent_notebook):
+        """Create training sub-tab"""
+        training_frame = tk.Frame(parent_notebook, bg='white', padx=16, pady=16)
+        parent_notebook.add(training_frame, text="🎓 Train AI")
+        
+        # Header
+        training_header = tk.Label(training_frame, text="🎓 Enhance AI Knowledge", 
+                                 bg='white', fg='#1565C0',
+                                 font=('Segoe UI', 11, 'bold'))
+        training_header.pack(anchor='w', pady=(0, 8))
+        
+        help_text = tk.Label(training_frame, 
+                           text="Add web content to improve AI responses. Paste URLs of articles, blogs, or documents!", 
+                           bg='white', fg='#666666', wraplength=400,
+                           font=('Segoe UI', 9))
+        help_text.pack(anchor='w', pady=(0, 16))
+        
+        # URL input
+        url_frame = tk.Frame(training_frame, bg='white')
+        url_frame.pack(fill='x', pady=(0, 16))
+        
+        url_label = tk.Label(url_frame, text="📎 Enter URL to learn from:", 
+                           bg='white', fg=self.colors['text_secondary'],
+                           font=('Segoe UI', 10))
+        url_label.pack(anchor='w', pady=(0, 4))
+        
+        url_input_frame = tk.Frame(url_frame, bg='white')
+        url_input_frame.pack(fill='x')
+        
+        self.url_entry = tk.Entry(url_input_frame, bg='#FAFAFA',
+                                fg=self.colors['text_primary'],
+                                font=('Segoe UI', 10), relief=tk.FLAT, bd=1)
+        self.url_entry.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        
+        fetch_btn = tk.Button(url_input_frame, text="🌐 Fetch & Learn", 
+                            command=self.fetch_training_data,
+                            bg='#26A69A', fg='white', font=('Segoe UI', 10, 'bold'),
+                            relief='flat', padx=16, pady=8, cursor='hand2')
+        fetch_btn.pack(side='right')
+        
+        # Training status
+        self.training_status = tk.StringVar(value="Ready to learn from new content!")
+        status_label = tk.Label(training_frame, textvariable=self.training_status,
+                              bg='white', fg='#666666', font=('Segoe UI', 9))
+        status_label.pack(anchor='w', pady=(8, 16))
+        
+        # Training history
+        history_label = tk.Label(training_frame, text="📚 Training History:", 
+                               bg='white', fg=self.colors['text_primary'],
+                               font=('Segoe UI', 10, 'bold'))
+        history_label.pack(anchor='w', pady=(0, 4))
+        
+        # Training history listbox
+        self.training_listbox = tk.Listbox(training_frame, bg='#FAFAFA',
+                                         font=('Segoe UI', 9), height=8,
+                                         relief='flat', bd=1)
+        self.training_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        
+        # Load training history
+        self.load_training_history()
+        
+        # Clear training data button
+        clear_btn = tk.Button(training_frame, text="🗑️ Clear Training Data", 
+                            command=self.clear_training_data,
+                            bg='#F44336', fg='white', font=('Segoe UI', 9),
+                            relief='flat', padx=12, pady=6, cursor='hand2')
+        clear_btn.pack(anchor='e')
+    
+    def summarize_selected_note(self):
+        """Summarize the selected note"""
+        selected_note = self.notes_var.get()
+        if not selected_note or selected_note == "No notes available":
+            messagebox.showwarning("No Selection", "Please select a note to summarize!")
+            return
+        
+        try:
+            # Read note content
+            filepath = os.path.join(NOTES_DIR, selected_note)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Update status
+            self.training_status.set("🧠 AI is analyzing and summarizing your note...")
+            self.robot.set_mood("thinking")
+            
+            def summarize_async():
+                try:
+                    max_sentences = int(self.summary_length.get())
+                    summary = summarize_text(content, max_sentences)
+                    self.root.after(0, lambda: self.show_summary_result(summary))
+                except Exception as e:
+                    self.root.after(0, lambda: self.summary_error(str(e)))
+            
+            threading.Thread(target=summarize_async, daemon=True).start()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read note: {e}")
+    
+    def show_summary_result(self, summary):
+        """Display the summary result"""
+        self.summary_display.config(state=tk.NORMAL)
+        self.summary_display.delete("1.0", tk.END)
+        self.summary_display.insert(tk.END, summary)
+        self.summary_display.config(state=tk.DISABLED)
+        
+        self.training_status.set("✅ Summary generated successfully!")
+        self.robot.set_mood("happy")
+    
+    def summary_error(self, error):
+        """Handle summary errors"""
+        self.summary_display.config(state=tk.NORMAL)
+        self.summary_display.delete("1.0", tk.END)
+        self.summary_display.insert(tk.END, f"❌ Error generating summary: {error}")
+        self.summary_display.config(state=tk.DISABLED)
+        
+        self.training_status.set("❌ Summary generation failed")
+    
+    def save_summary_as_note(self):
+        """Save the generated summary as a new note"""
+        summary_content = self.summary_display.get("1.0", tk.END).strip()
+        if not summary_content or "Error generating summary" in summary_content:
+            messagebox.showwarning("No Summary", "Please generate a summary first!")
+            return
+        
+        try:
+            original_note = self.notes_var.get().replace('.txt', '')
+            filename = save_note(summary_content, f"summary_of_{original_note}")
+            messagebox.showinfo("Saved", f"Summary saved as: {filename}")
+            self.training_status.set("💾 Summary saved as a new note!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save summary: {e}")
+    
+    def copy_summary_to_clipboard(self):
+        """Copy summary to clipboard"""
+        summary_content = self.summary_display.get("1.0", tk.END).strip()
+        if not summary_content:
+            messagebox.showwarning("No Summary", "Please generate a summary first!")
+            return
+        
+        self.root.clipboard_clear()
+        self.root.clipboard_append(summary_content)
+        self.training_status.set("📋 Summary copied to clipboard!")
+    
+    def fetch_training_data(self):
+        """Fetch training data from URL"""
+        url = self.url_entry.get().strip()
+        if not url:
+            messagebox.showwarning("No URL", "Please enter a URL to fetch data from!")
+            return
+        
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        self.training_status.set("🌐 Fetching content from URL...")
+        self.robot.set_mood("thinking")
+        
+        def fetch_async():
+            try:
+                content_preview = fetch_training_data_from_url(url)
+                self.root.after(0, lambda: self.training_fetch_complete(content_preview))
+            except Exception as e:
+                self.root.after(0, lambda: self.training_fetch_error(str(e)))
+        
+        threading.Thread(target=fetch_async, daemon=True).start()
+    
+    def training_fetch_complete(self, content_preview):
+        """Handle successful training data fetch"""
+        self.url_entry.delete(0, tk.END)
+        self.training_status.set("✅ Successfully learned from the content!")
+        self.robot.set_mood("happy")
+        
+        # Refresh training history
+        self.load_training_history()
+        
+        messagebox.showinfo("Success", 
+                          f"AI has learned from the content!\n\nPreview:\n{content_preview[:200]}...")
+    
+    def training_fetch_error(self, error):
+        """Handle training data fetch error"""
+        self.training_status.set(f"❌ Failed to fetch: {error}")
+        messagebox.showerror("Fetch Error", f"Could not fetch content: {error}")
+    
+    def load_training_history(self):
+        """Load training history into listbox"""
+        self.training_listbox.delete(0, tk.END)
+        
+        for i, entry in enumerate(training_data):
+            source = entry.get('source', 'Unknown')
+            timestamp = entry.get('timestamp', 'Unknown time')
+            display_text = f"{i+1}. {source} ({timestamp})"
+            self.training_listbox.insert(tk.END, display_text)
+        
+        if not training_data:
+            self.training_listbox.insert(tk.END, "No training data yet - add some URLs above!")
+    
+    def clear_training_data(self):
+        """Clear all training data"""
+        if messagebox.askyesno("Clear Training Data", 
+                             "Are you sure you want to clear all training data? This cannot be undone!"):
+            global training_data
+            training_data = []
+            
+            # Save empty training data
+            with open(TRAINING_DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+            
+            self.load_training_history()
+            self.training_status.set("🗑️ Training data cleared!")
+            messagebox.showinfo("Cleared", "All training data has been cleared!")
+    
+    def refresh_notes_dropdown(self):
+        """Refresh the notes dropdown with current notes"""
+        if hasattr(self, 'notes_dropdown'):
+            notes_list = list(embeddings_db.keys()) if embeddings_db else ["No notes available"]
+            self.notes_dropdown['values'] = notes_list
 
 def main():
     initialize()
