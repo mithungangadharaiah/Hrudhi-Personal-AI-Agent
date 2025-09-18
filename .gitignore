@@ -78,5 +78,15 @@ tmp/
 
 # Model caches (these can be large)
 .cache/
+
+# Large executables and installers (over 100MB)
+installer_standalone/
+installer_with_deps/
+*.exe
+Hrudhi.exe
+temp_installer/
+
+# Allow compressed installer (small enough for GitHub)
+!Hrudhi-AI-Agent-Installer.zip
 models/
 sentence_transformers_cache/
