@@ -1,0 +1,38 @@
+[
+  {
+    "id": "b685f836-08de-4e4f-81ae-27d4ed877446",
+    "title": "deployment",
+    "content": "1. System Accessibility\nDynatrace Setup:\n\tMonitor PAS-X application servers, DB (Oracle), and Active Directory.\n\tDefine SLOs for login success rate and auth response times.\nImplementation:\n\tCapture failed login attempts (via logs).\n\tAlert when wltuser DB account lock is detected or DB listener is down.\n\tUse Synthetic tests to continuously test PAS-X login availability.\n\n====================================================================================\n2. System Performance\nDynatrace Setup:\n\tFull-stack monitoring on PAS-X client (Citrix), DB, and application servers.\n\tUse user session monitoring (DEM) to measure client-side performance.\nImplementation:\n\tDetect slowness trends per Citrix server and automatically correlate with CPU, memory, or network latency.\n\tSmartscape topology will show whether DB or app tier is bottlenecked.\n\tDefine dashboards with KPIs for client start-up time and transaction response times.\n\n====================================================================================\n3. System Functionality (Printing)\nDynatrace Setup:\n\tMonitor MES print services and printers via process monitoring and logs.\nImplementation:\n\tCustom log ingestion for MES error messages (label not printed, print service unavailable).\n\tProcess availability monitoring for print services.\n\tAlerts when printer queues are stuck or services crash.\n\n====================================================================================\n4. System Integration (SAP & L2)\nDynatrace Setup:\n\tUse distributed tracing for message flow between SAP ↔ MES ↔ L2.\n\tIngest SAP IDOC logs and adapter service logs into Grail.\nImplementation:\n\tBuild DQL queries to track failed/reprocessed IDOCs.\n\tMonitor adapter services for availability and error log frequency.\n\tSet SLOs for successful message transfer rates.",
+    "summary": "Dynatrace provides full-stack monitoring on PAS-X client (Citrix), DB, and application servers. Monitor MES print services and printers via process monitoring and logs. Use distributed tracing for message flow between SAP and MES.",
+    "created_at": "2025-09-20T00:31:09.678264",
+    "updated_at": "2025-09-20T00:35:19.433540",
+    "tags": [],
+    "color": "#6366F1",
+    "pinned": true,
+    "is_markdown": true
+  },
+  {
+    "id": "2276ab6f-29ba-4f5d-94a4-242fdc6881c2",
+    "title": "implementationSteps",
+    "content": "1. System Accessibility\nDynatrace Setup:\n\tMonitor PAS-X application servers, DB (Oracle), and Active Directory.\n\tDefine SLOs for login success rate and auth response times.\nImplementation:\n\tCapture failed login attempts (via logs).\n\tAlert when wltuser DB account lock is detected or DB listener is down.\n\tUse Synthetic tests to continuously test PAS-X login availability.\n\n====================================================================================\n2. System Performance\nDynatrace Setup:\n\tFull-stack monitoring on PAS-X client (Citrix), DB, and application servers.\n\tUse user session monitoring (DEM) to measure client-side performance.\nImplementation:\n\tDetect slowness trends per Citrix server and automatically correlate with CPU, memory, or network latency.\n\tSmartscape topology will show whether DB or app tier is bottlenecked.\n\tDefine dashboards with KPIs for client start-up time and transaction response times.\n\n====================================================================================\n3. System Functionality (Printing)\nDynatrace Setup:\n\tMonitor MES print services and printers via process monitoring and logs.\nImplementation:\n\tCustom log ingestion for MES error messages (label not printed, print service unavailable).\n\tProcess availability monitoring for print services.\n\tAlerts when printer queues are stuck or services crash.\n\n====================================================================================\n4. System Integration (SAP & L2)\nDynatrace Setup:\n\tUse distributed tracing for message flow between SAP ↔ MES ↔ L2.\n\tIngest SAP IDOC logs and adapter service logs into Grail.\nImplementation:\n\tBuild DQL queries to track failed/reprocessed IDOCs.\n\tMonitor adapter services for availability and error log frequency.\n\tSet SLOs for successful message transfer rates.",
+    "summary": "",
+    "created_at": "2025-09-19T23:36:57.539144",
+    "updated_at": "2025-09-19T23:40:24.809819",
+    "tags": [],
+    "color": "#FFE66D",
+    "pinned": false,
+    "is_markdown": false
+  },
+  {
+    "id": "c329f709-a6d6-4c26-b3ed-4afc65d39653",
+    "title": "APIKeys",
+    "content": "Here are some examples you can safely use in testing, docs, or mock configs:\n\nGeneric random style\n\n1234567890abcdef1234567890abcdef\n\n\nUUID style (common in some APIs)\n\n550e8400-e29b-41d4-a716-446655440000\n\n\nGoogle API style\n\nAIzaSyA-EXAMPLEKEY1234567890abcdefghi\n\n\nStripe style\n\nsk_test_4eC39HqLyjWDarjtT1zdp7dc\n\n\nDynatrace API style (since you work with Dynatrace 😉)\n\ndt0c01.EXAMPLEabcdefghijklmno123456789.PqRstuVWxyZaBCdefGhiJKlmNoPQrsTuvWXyZ",
+    "summary": "",
+    "created_at": "2025-09-19T23:39:42.705612",
+    "updated_at": "2025-09-19T23:43:12.266618",
+    "tags": [],
+    "color": "#FFE66D",
+    "pinned": false,
+    "is_markdown": false
+  }
+]
