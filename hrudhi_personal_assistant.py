@@ -1,10 +1,10 @@
 """
-Hrudhi Personal Assistant - Advanced AI-Powered Note Taking & Summarization
-Modern Windows 11 design with glassmorphism, 3D avatar, and AI capabilities
+Hrudhi Personal Assistant - Advanced AI-Powered Note Taking & Chat
+Modern Windows 11 design with glassmorphism, 3D avatar, AI capabilities, and integrated chat
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, scrolledtext
 import customtkinter as ctk
 import pygame
 import math
@@ -19,6 +19,27 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 import uuid
 import re
+import requests
+from urllib.parse import urlparse
+import webbrowser
+
+# AI and ML imports with graceful fallback
+AI_AVAILABLE = False
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    import torch
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+    AI_AVAILABLE = True
+    print("🤖 AI capabilities loaded successfully")
+except ImportError as e:
+    print(f"⚠️ AI features not available: {e}")
+    print("💡 You can still use the note-taking features without AI chat")
+except Exception as e:
+    print(f"⚠️ AI loading interrupted: {e}")
+    print("💡 You can still use the note-taking features without AI chat")
+    from sklearn.metrics.pairwise import cosine_similarity
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -46,23 +67,73 @@ class Note:
         return cls(**data)
 
 class AIEngine:
-    """Enhanced AI engine with summarization capabilities"""
+    """Enhanced AI engine with chat, summarization, and learning capabilities"""
     
     def __init__(self):
-        self.model = None
+        self.chat_model = None
+        self.chat_tokenizer = None
+        self.chat_pipeline = None
         self.summarizer = None
+        self.embedder = None
+        self.notes_data = []
+        self.note_embeddings = []
+        self.learning_data = []  # Store new learning data
+        self.link_data = []  # Store data from shared links
+        self.conversation_history = []
         self.load_models()
     
     def load_models(self):
-        """Load AI models for search and summarization"""
+        """Load AI models for chat, search, and summarization"""
+        global AI_AVAILABLE
+        
+        if not AI_AVAILABLE:
+            logger.info("🤖 AI features disabled - running in note-taking mode only")
+            return
+            
         try:
-            from sentence_transformers import SentenceTransformer
-            from transformers import pipeline
+            logger.info("🤖 Loading advanced AI models...")
             
-            logger.info("Loading AI models...")
+            # Load chat model - Try smaller model first, fallback to larger one
+            model_options = [
+                "gpt2",  # Very small, always available
+                "microsoft/DialoGPT-small",  # Small chat model
+                "Qwen/Qwen2.5-7B-Instruct"   # Preferred larger model
+            ]
             
-            # Load search model
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            for model_name in model_options:
+                try:
+                    logger.info(f"Loading chat model: {model_name}")
+                    
+                    self.chat_tokenizer = AutoTokenizer.from_pretrained(model_name)
+                    self.chat_model = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float32,  # Use float32 for compatibility
+                        low_cpu_mem_usage=True,
+                        trust_remote_code=True
+                    )
+                    logger.info(f"✅ Successfully loaded {model_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load {model_name}: {e}")
+                    if model_name == model_options[-1]:  # Last model failed
+                        raise e
+                    continue
+            
+            # Setup chat pipeline
+            self.chat_pipeline = pipeline(
+                "text-generation",
+                model=self.chat_model,
+                tokenizer=self.chat_tokenizer,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                max_new_tokens=150,
+                repetition_penalty=1.1,
+                device=-1  # Force CPU for compatibility
+            )
+            
+            # Load embedder for semantic search and learning
+            self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
             
             # Load summarization model
             try:
@@ -72,23 +143,240 @@ class AIEngine:
                     device=-1  # CPU
                 )
             except Exception as e:
-                logger.warning(f"Advanced summarizer failed, using simple model: {e}")
+                logger.warning(f"Advanced summarizer failed, using simpler model: {e}")
                 self.summarizer = pipeline(
                     "summarization",
                     model="sshleifer/distilbart-cnn-12-6",
                     device=-1
                 )
             
-            logger.info("✅ AI models loaded successfully")
+            logger.info("✅ All AI models loaded successfully!")
+            self.load_knowledge_base()
             
-        except ImportError:
-            logger.warning("AI libraries not available. AI features disabled.")
-            self.model = None
-            self.summarizer = None
         except Exception as e:
             logger.error(f"Failed to load AI models: {e}")
-            self.model = None
+            self.chat_model = None
             self.summarizer = None
+            self.embedder = None
+            AI_AVAILABLE = False
+    
+    def load_knowledge_base(self):
+        """Load existing notes and learning data"""
+        try:
+            # Load notes
+            notes_dir = Path("notes_data")
+            if notes_dir.exists():
+                self.notes_data = []
+                notes_text = []
+                
+                for json_file in notes_dir.glob("*.json"):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            note = json.load(f)
+                            self.notes_data.append(note)
+                            text = f"{note.get('title', '')} {note.get('content', '')}"
+                            notes_text.append(text)
+                    except Exception as e:
+                        logger.warning(f"Error loading {json_file}: {e}")
+                
+                if notes_text and self.embedder:
+                    self.note_embeddings = self.embedder.encode(notes_text)
+                    logger.info(f"📚 Indexed {len(notes_text)} notes for AI chat")
+            
+            # Load learning data
+            learning_file = Path("learning_data.json")
+            if learning_file.exists():
+                try:
+                    with open(learning_file, 'r', encoding='utf-8') as f:
+                        self.learning_data = json.load(f)
+                    logger.info(f"🧠 Loaded {len(self.learning_data)} learning entries")
+                except Exception as e:
+                    logger.warning(f"Error loading learning data: {e}")
+            
+            # Load link data
+            links_file = Path("link_data.json")
+            if links_file.exists():
+                try:
+                    with open(links_file, 'r', encoding='utf-8') as f:
+                        self.link_data = json.load(f)
+                    logger.info(f"🔗 Loaded {len(self.link_data)} shared links")
+                except Exception as e:
+                    logger.warning(f"Error loading link data: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error loading knowledge base: {e}")
+    
+    def add_learning_data(self, data: str, source: str = "user"):
+        """Add new learning data to the AI's knowledge base"""
+        try:
+            learning_entry = {
+                "content": data,
+                "source": source,
+                "timestamp": datetime.now().isoformat(),
+                "id": str(uuid.uuid4())
+            }
+            
+            self.learning_data.append(learning_entry)
+            
+            # Re-encode embeddings if we have embedder
+            if self.embedder:
+                all_text = [entry["content"] for entry in self.learning_data]
+                if all_text:
+                    self.learning_embeddings = self.embedder.encode(all_text)
+            
+            # Save to file
+            learning_file = Path("learning_data.json")
+            with open(learning_file, 'w', encoding='utf-8') as f:
+                json.dump(self.learning_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"🧠 Added new learning data from {source}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding learning data: {e}")
+            return False
+    
+    def add_link_data(self, url: str, title: str = "", content: str = ""):
+        """Add shared link data to knowledge base"""
+        try:
+            # Try to extract content from URL if not provided
+            if not content and url:
+                try:
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200:
+                        # Simple text extraction (could be enhanced with BeautifulSoup)
+                        content = response.text[:2000]  # First 2000 chars
+                except Exception as e:
+                    logger.warning(f"Could not fetch content from {url}: {e}")
+            
+            link_entry = {
+                "url": url,
+                "title": title or urlparse(url).netloc,
+                "content": content,
+                "timestamp": datetime.now().isoformat(),
+                "id": str(uuid.uuid4())
+            }
+            
+            self.link_data.append(link_entry)
+            
+            # Save to file
+            links_file = Path("link_data.json")
+            with open(links_file, 'w', encoding='utf-8') as f:
+                json.dump(self.link_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"🔗 Added link data: {title or url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding link data: {e}")
+            return False
+    
+    def search_relevant_content(self, query: str, top_k: int = 3) -> List[Dict]:
+        """Search for relevant content across all knowledge sources"""
+        relevant_content = []
+        
+        try:
+            if not self.embedder:
+                return relevant_content
+            
+            query_embedding = self.embedder.encode([query])
+            
+            # Search notes
+            if hasattr(self, 'note_embeddings') and len(self.note_embeddings) > 0:
+                similarities = cosine_similarity(query_embedding, self.note_embeddings)[0]
+                top_indices = np.argsort(similarities)[-top_k:][::-1]
+                
+                for idx in top_indices:
+                    if similarities[idx] > 0.3:
+                        note = self.notes_data[idx].copy()
+                        note['similarity'] = similarities[idx]
+                        note['source_type'] = 'note'
+                        relevant_content.append(note)
+            
+            # Search learning data
+            if hasattr(self, 'learning_embeddings') and len(self.learning_embeddings) > 0:
+                similarities = cosine_similarity(query_embedding, self.learning_embeddings)[0]
+                top_indices = np.argsort(similarities)[-top_k:][::-1]
+                
+                for idx in top_indices:
+                    if similarities[idx] > 0.3:
+                        entry = self.learning_data[idx].copy()
+                        entry['similarity'] = similarities[idx]
+                        entry['source_type'] = 'learning'
+                        relevant_content.append(entry)
+            
+            # Sort by similarity
+            relevant_content.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+            return relevant_content[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Error searching content: {e}")
+            return relevant_content
+    
+    def generate_chat_response(self, user_message: str) -> str:
+        """Generate intelligent chat response using all available knowledge"""
+        if not self.chat_pipeline:
+            return "🤖 AI chat is not available. AI models are not loaded. You can still use the note-taking features!"
+        
+        try:
+            # Search for relevant content
+            relevant_content = self.search_relevant_content(user_message, top_k=3)
+            
+            # Build context
+            context_info = ""
+            if relevant_content:
+                context_info = "Context from your knowledge base:\n"
+                for i, item in enumerate(relevant_content):
+                    source_type = item.get('source_type', 'unknown')
+                    if source_type == 'note':
+                        context_info += f"- {item.get('title', 'Untitled')}: {item.get('content', '')[:150]}...\n"
+                    elif source_type == 'learning':
+                        context_info += f"- Learning: {item.get('content', '')[:150]}...\n"
+                context_info += "\n"
+            
+            # Create a simple text prompt (works better with GPT-2)
+            prompt = "You are Hrudhi 🤖, an AI assistant. "
+            if context_info:
+                prompt += f"{context_info}Question: {user_message}\nHrudhi: "
+            else:
+                prompt += f"User: {user_message}\nHrudhi: "
+            
+            # Generate response using the pipeline directly
+            response = self.chat_pipeline(
+                prompt,
+                max_new_tokens=100,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                repetition_penalty=1.1,
+                pad_token_id=self.chat_tokenizer.eos_token_id
+            )[0]['generated_text']
+            
+            # Extract just the generated part (after the prompt)
+            generated_part = response[len(prompt):].strip()
+            
+            # Clean up the response
+            if generated_part:
+                # Stop at natural break points
+                stop_tokens = ['\nUser:', '\nHuman:', '\n\n', 'User:', 'Human:']
+                for stop in stop_tokens:
+                    if stop in generated_part:
+                        generated_part = generated_part.split(stop)[0]
+                
+                # Add conversation to history
+                self.conversation_history.append({
+                    'user': user_message,
+                    'assistant': generated_part,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                return f"🤖 {generated_part}"
+            else:
+                return "🤖 I understand you're trying to chat with me. How can I help you today?"
+            
+        except Exception as e:
+            logger.error(f"Error generating chat response: {e}")
+            return f"🤖 I encountered an error while processing your request: {str(e)}\n\nLet me try to help you in a different way. What would you like to know?"
     
     def summarize_text(self, text: str, max_length: int = 150) -> str:
         """Generate AI summary of text"""
@@ -133,7 +421,7 @@ class AIEngine:
     
     def search_notes(self, query: str, notes: List[Note], top_k: int = 5) -> List[tuple]:
         """Semantic search through notes"""
-        if not self.model or not query.strip():
+        if not self.embedder or not query.strip():
             return self._text_search(query, notes)
         
         try:
@@ -152,8 +440,8 @@ class AIEngine:
                 return []
             
             # Calculate similarities
-            query_embedding = self.model.encode([query])
-            corpus_embeddings = self.model.encode(corpus)
+            query_embedding = self.embedder.encode([query])
+            corpus_embeddings = self.embedder.encode(corpus)
             scores = cosine_similarity(query_embedding, corpus_embeddings)[0]
             
             # Get top matches
@@ -401,9 +689,15 @@ class HrudhiPersonalAssistant:
         self.data_file = Path("hrudhi_assistant_data.json")
         self.current_theme = "system"
         
+        # Initialize chat state
+        self.chat_visible = False
+        
         # AI and components
         self.ai_engine = AIEngine()
         self.markdown_editor = MarkdownEditor(self)
+        
+        # Check actual AI availability after engine initialization
+        self.ai_available = self.ai_engine.chat_pipeline is not None
         
         # Robot avatar setup
         self.setup_robot_canvas()
@@ -554,7 +848,7 @@ class HrudhiPersonalAssistant:
             fg_color=("#6366F1", "#4F46E5"),
             hover_color=("#4F46E5", "#4338CA")
         )
-        new_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        new_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         
         import_btn = ctk.CTkButton(
             controls_frame,
@@ -564,13 +858,63 @@ class HrudhiPersonalAssistant:
             corner_radius=20,
             font=ctk.CTkFont(size=12)
         )
-        import_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        import_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        
+        # Chat assistant button
+        # AI Chat toggle with modern styling
+        chat_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        chat_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 15))
+        
+        self.chat_open = False
+        self.chat_btn = ctk.CTkButton(
+            chat_frame,
+            text="🤖 AI Chat" if self.ai_available else "🤖 AI Chat (Unavailable)",
+            command=self.toggle_chat_panel if self.ai_available else self.show_ai_unavailable_message,
+            height=45,
+            corner_radius=20,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=("#10B981", "#059669") if self.ai_available else ("#6B7280", "#4B5563"),
+            hover_color=("#059669", "#047857") if self.ai_available else ("#4B5563", "#374151"),
+            state="normal" if self.ai_available else "disabled"
+        )
+        self.chat_btn.pack(fill=tk.X)
+        
+        # Learning and Link buttons
+        learning_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        learning_frame.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 15))
+        learning_frame.grid_columnconfigure((0, 1), weight=1)
+        
+        learn_btn = ctk.CTkButton(
+            learning_frame,
+            text="🧠 Teach AI" if self.ai_available else "🧠 AI Learning (Unavailable)",
+            command=self.open_learning_dialog if self.ai_available else self.show_ai_unavailable_message,
+            height=35,
+            corner_radius=15,
+            font=ctk.CTkFont(size=11),
+            fg_color=("#8B5CF6", "#7C3AED") if self.ai_available else ("#6B7280", "#4B5563"),
+            hover_color=("#7C3AED", "#6D28D9") if self.ai_available else ("#4B5563", "#374151"),
+            state="normal" if self.ai_available else "disabled"
+        )
+        learn_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        
+        link_btn = ctk.CTkButton(
+            learning_frame,
+            text="🔗 Add Link" if self.ai_available else "🔗 Links (Unavailable)",
+            command=self.open_link_dialog if self.ai_available else self.show_ai_unavailable_message,
+            height=35,
+            corner_radius=15,
+            font=ctk.CTkFont(size=11),
+            fg_color=("#F59E0B", "#D97706") if self.ai_available else ("#6B7280", "#4B5563"),
+            hover_color=("#D97706", "#B45309") if self.ai_available else ("#4B5563", "#374151"),
+            state="normal" if self.ai_available else "disabled"
+        )
+        link_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         
         # Notes list with enhanced styling
         self.create_enhanced_notes_list()
         
         # Configure sidebar grid
-        self.sidebar.grid_rowconfigure(3, weight=1)
+        self.sidebar.grid_rowconfigure(5, weight=1)
         self.sidebar.grid_columnconfigure(0, weight=1)
     
     def create_enhanced_notes_list(self):
@@ -579,7 +923,7 @@ class HrudhiPersonalAssistant:
             self.sidebar,
             fg_color="transparent"
         )
-        list_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        list_frame.grid(row=5, column=0, sticky="nsew", padx=20, pady=(0, 20))
         list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
         
@@ -611,21 +955,40 @@ class HrudhiPersonalAssistant:
         self.notes_listbox.configure(yscrollcommand=scrollbar.set)
     
     def create_main_content_area(self):
-        """Create main content area with glassmorphism"""
-        main_frame = ctk.CTkFrame(
+        """Create main content area with glassmorphism and chat integration"""
+        # Main container that can switch between notes and chat
+        self.main_container = ctk.CTkFrame(
             self.root,
             corner_radius=20,
             fg_color=("#FFFFFF", "#1E293B"),
             border_width=1,
             border_color=("#E2E8F0", "#334155")
         )
-        main_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 15), pady=15)
-        main_frame.grid_rowconfigure(3, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
+        self.main_container.grid(row=0, column=1, sticky="nsew", padx=(8, 15), pady=15)
+        self.main_container.grid_rowconfigure(0, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
         
+        # Notes editor frame (default view)
+        self.notes_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        self.notes_frame.grid(row=0, column=0, sticky="nsew")
+        self.notes_frame.grid_rowconfigure(3, weight=1)
+        self.notes_frame.grid_columnconfigure(0, weight=1)
+        
+        # Create notes interface
+        self.create_notes_interface()
+        
+        # Chat frame (hidden by default)
+        self.chat_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        # Don't grid it yet - will be shown when chat is toggled
+        
+        # Create chat interface
+        self.create_chat_interface()
+    
+    def create_notes_interface(self):
+        """Create the notes editing interface"""
         # Note title with enhanced styling
         self.title_entry = ctk.CTkEntry(
-            main_frame,
+            self.notes_frame,
             placeholder_text="✏️ Note title...",
             font=ctk.CTkFont(size=18, weight="bold"),
             height=45,
@@ -635,13 +998,490 @@ class HrudhiPersonalAssistant:
         self.title_entry.bind('<KeyRelease>', self.on_content_changed)
         
         # Enhanced toolbar
-        self.create_enhanced_toolbar(main_frame)
+        self.create_enhanced_toolbar(self.notes_frame)
         
         # AI Summary section
-        self.create_ai_summary_section(main_frame)
+        self.create_ai_summary_section(self.notes_frame)
         
         # Content editor with markdown support
-        self.create_content_editor(main_frame)
+        self.create_content_editor(self.notes_frame)
+    
+    def create_chat_interface(self):
+        """Create integrated AI chat interface"""
+        self.chat_frame.grid_rowconfigure(1, weight=1)
+        self.chat_frame.grid_columnconfigure(0, weight=1)
+        
+        # Chat header
+        header_frame = ctk.CTkFrame(self.chat_frame, fg_color="transparent", height=60)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=25, pady=(25, 15))
+        header_frame.grid_propagate(False)
+        header_frame.grid_columnconfigure(1, weight=1)
+        
+        chat_title = ctk.CTkLabel(
+            header_frame,
+            text="🤖 Hrudhi AI Chat Assistant",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=("#4F46E5", "#818CF8")
+        )
+        chat_title.grid(row=0, column=0, sticky="w", pady=10)
+        
+        # Chat controls
+        controls_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        controls_frame.grid(row=0, column=2, sticky="e", pady=10)
+        
+        clear_chat_btn = ctk.CTkButton(
+            controls_frame,
+            text="🗑️ Clear",
+            command=self.clear_chat,
+            width=80,
+            height=30,
+            corner_radius=15,
+            font=ctk.CTkFont(size=10),
+            fg_color=("#EF4444", "#DC2626"),
+            hover_color=("#DC2626", "#B91C1C")
+        )
+        clear_chat_btn.pack(side="right", padx=(10, 0))
+        
+        # Chat display area
+        chat_display_frame = ctk.CTkFrame(
+            self.chat_frame,
+            corner_radius=15,
+            fg_color=("#F8FAFC", "#0F172A")
+        )
+        chat_display_frame.grid(row=1, column=0, sticky="nsew", padx=25, pady=(0, 15))
+        chat_display_frame.grid_rowconfigure(0, weight=1)
+        chat_display_frame.grid_columnconfigure(0, weight=1)
+        
+        # Chat messages scrollable text
+        self.chat_display = scrolledtext.ScrolledText(
+            chat_display_frame,
+            wrap=tk.WORD,
+            font=("Segoe UI", 11),
+            bg=("#FFFFFF", "#1E293B")[ctk.get_appearance_mode() == "Dark"],
+            fg=("#1F2937", "#E5E7EB")[ctk.get_appearance_mode() == "Dark"],
+            relief="flat",
+            borderwidth=0,
+            padx=15,
+            pady=15,
+            state="disabled"
+        )
+        self.chat_display.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
+        
+        # Input area
+        input_frame = ctk.CTkFrame(self.chat_frame, fg_color="transparent", height=80)
+        input_frame.grid(row=2, column=0, sticky="ew", padx=25, pady=(0, 25))
+        input_frame.grid_propagate(False)
+        input_frame.grid_columnconfigure(0, weight=1)
+        
+        # Chat input
+        self.chat_input = ctk.CTkEntry(
+            input_frame,
+            placeholder_text="💬 Ask me anything about your notes or share links to learn from...",
+            font=ctk.CTkFont(size=12),
+            height=40,
+            corner_radius=20
+        )
+        self.chat_input.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.chat_input.bind('<Return>', self.send_chat_message)
+        self.chat_input.bind('<Control-Return>', lambda e: self.chat_input.insert(tk.END, '\n'))
+        
+        # Send button
+        self.send_btn = ctk.CTkButton(
+            input_frame,
+            text="🚀 Send",
+            command=self.send_chat_message,
+            width=80,
+            height=40,
+            corner_radius=20,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=("#10B981", "#059669"),
+            hover_color=("#059669", "#047857")
+        )
+        self.send_btn.grid(row=0, column=1)
+        
+        # Initialize chat
+        self.add_chat_message("🤖 Hi! I'm Hrudhi, your AI assistant. I know about all your notes and can learn from new information you share. How can I help you today?", "assistant")
+    
+    def toggle_chat_panel(self):
+        """Toggle between notes view and chat view"""
+        if hasattr(self, 'chat_visible') and self.chat_visible:
+            # Switch to notes view
+            self.chat_frame.grid_remove()
+            self.notes_frame.grid(row=0, column=0, sticky="nsew")
+            self.chat_btn.configure(text="💬 Chat")
+            self.chat_visible = False
+        else:
+            # Switch to chat view
+            self.notes_frame.grid_remove()
+            self.chat_frame.grid(row=0, column=0, sticky="nsew")
+            self.chat_frame.grid_rowconfigure(1, weight=1)
+            self.chat_frame.grid_columnconfigure(0, weight=1)
+            self.chat_btn.configure(text="📝 Notes")
+            self.chat_visible = True
+    
+    def send_chat_message(self, event=None):
+        """Send message to AI chat"""
+        message = self.chat_input.get().strip()
+        if not message:
+            return
+            
+        # Add user message
+        self.add_chat_message(message, "user")
+        self.chat_input.delete(0, tk.END)
+        
+        # Disable send button and show thinking
+        self.send_btn.configure(state="disabled", text="🤔 Thinking...")
+        self.root.update()
+        
+        try:
+            # Get AI response
+            response = self.ai_engine.generate_chat_response(message)
+            self.add_chat_message(response, "assistant")
+        except Exception as e:
+            self.add_chat_message(f"🚫 Sorry, I encountered an error: {str(e)}", "assistant")
+        finally:
+            # Re-enable send button
+            self.send_btn.configure(state="normal", text="🚀 Send")
+    
+    def add_chat_message(self, message, sender):
+        """Add message to chat display"""
+        self.chat_display.configure(state="normal")
+        
+        # Add timestamp and sender
+        timestamp = datetime.now().strftime("%H:%M")
+        if sender == "user":
+            prefix = f"[{timestamp}] 👤 You: "
+            self.chat_display.insert(tk.END, prefix, "user_label")
+        else:
+            prefix = f"[{timestamp}] 🤖 Hrudhi: "
+            self.chat_display.insert(tk.END, prefix, "bot_label")
+        
+        # Add message content
+        self.chat_display.insert(tk.END, f"{message}\n\n")
+        
+        # Configure text tags for styling
+        self.chat_display.tag_config("user_label", foreground="#10B981", font=("Segoe UI", 10, "bold"))
+        self.chat_display.tag_config("bot_label", foreground="#6366F1", font=("Segoe UI", 10, "bold"))
+        
+        # Auto-scroll to bottom
+        self.chat_display.configure(state="disabled")
+        self.chat_display.see(tk.END)
+    
+    def clear_chat(self):
+        """Clear chat history"""
+        result = messagebox.askyesno("Clear Chat", "🗑️ Clear all chat messages?")
+        if result:
+            self.chat_display.configure(state="normal")
+            self.chat_display.delete(1.0, tk.END)
+            self.chat_display.configure(state="disabled")
+            # Reset AI conversation history
+            self.ai_engine.conversation_history = []
+            # Add welcome message back
+            self.add_chat_message("🤖 Chat cleared! How can I help you today?", "assistant")
+    
+    def open_learning_dialog(self):
+        """Open dialog to teach AI new information"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("🧠 Teach Hrudhi AI")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Dialog content
+        dialog.grid_rowconfigure(1, weight=1)
+        dialog.grid_columnconfigure(0, weight=1)
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            dialog,
+            text="🧠 Teach Hrudhi New Information",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=("#4F46E5", "#818CF8")
+        )
+        title_label.grid(row=0, column=0, pady=20)
+        
+        # Instructions
+        instructions = ctk.CTkLabel(
+            dialog,
+            text="Share any information you'd like Hrudhi to remember and use in future conversations:",
+            font=ctk.CTkFont(size=12),
+            wraplength=550
+        )
+        instructions.grid(row=1, column=0, pady=(0, 15), padx=20)
+        
+        # Text input
+        text_frame = ctk.CTkFrame(dialog)
+        text_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 15))
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
+        
+        learning_text = ctk.CTkTextbox(
+            text_frame,
+            height=200,
+            font=ctk.CTkFont(size=11),
+            wrap="word"
+        )
+        learning_text.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.grid(row=3, column=0, pady=20)
+        
+        def save_learning():
+            content = learning_text.get("1.0", tk.END).strip()
+            if content:
+                self.ai_engine.add_learning_data(content)
+                messagebox.showinfo("Success", "🧠 Information added to Hrudhi's knowledge base!")
+                dialog.destroy()
+            else:
+                messagebox.showwarning("Warning", "Please enter some information to teach.")
+        
+        save_btn = ctk.CTkButton(
+            button_frame,
+            text="🧠 Teach Hrudhi",
+            command=save_learning,
+            width=120,
+            fg_color=("#10B981", "#059669"),
+            hover_color=("#059669", "#047857")
+        )
+        save_btn.pack(side="left", padx=(0, 10))
+        
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="❌ Cancel",
+            command=dialog.destroy,
+            width=100,
+            fg_color=("#6B7280", "#4B5563"),
+            hover_color=("#4B5563", "#374151")
+        )
+        cancel_btn.pack(side="left")
+        
+        learning_text.focus()
+    
+    def open_link_dialog(self):
+        """Open dialog to add learning links"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("🔗 Add Learning Link")
+        dialog.geometry("600x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Dialog content
+        dialog.grid_rowconfigure(2, weight=1)
+        dialog.grid_columnconfigure(0, weight=1)
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            dialog,
+            text="🔗 Share Learning Links with Hrudhi",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=("#4F46E5", "#818CF8")
+        )
+        title_label.grid(row=0, column=0, pady=20)
+        
+        # URL input frame
+        url_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        url_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 15))
+        url_frame.grid_columnconfigure(1, weight=1)
+        
+        url_label = ctk.CTkLabel(url_frame, text="URL:", font=ctk.CTkFont(size=12, weight="bold"))
+        url_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        
+        url_entry = ctk.CTkEntry(
+            url_frame,
+            placeholder_text="https://example.com/article",
+            font=ctk.CTkFont(size=11),
+            height=35
+        )
+        url_entry.grid(row=0, column=1, sticky="ew")
+        
+        # Description input frame
+        desc_frame = ctk.CTkFrame(dialog)
+        desc_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 15))
+        desc_frame.grid_rowconfigure(1, weight=1)
+        desc_frame.grid_columnconfigure(0, weight=1)
+        
+        desc_label = ctk.CTkLabel(desc_frame, text="📝 Optional Description:", font=ctk.CTkFont(size=12, weight="bold"))
+        desc_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+        
+        desc_text = ctk.CTkTextbox(
+            desc_frame,
+            height=120,
+            font=ctk.CTkFont(size=11),
+            wrap="word"
+        )
+        desc_text.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        # Add placeholder-like text
+        placeholder = "Briefly describe what this link contains or why it's useful..."
+        desc_text.insert("1.0", placeholder)
+        desc_text.configure(text_color=("#9CA3AF", "#6B7280"))  # Gray color for placeholder
+        
+        def on_desc_focus_in(event):
+            if desc_text.get("1.0", "end-1c") == placeholder:
+                desc_text.delete("1.0", "end")
+                desc_text.configure(text_color=("black", "white"))  # Normal text color
+        
+        def on_desc_focus_out(event):
+            if not desc_text.get("1.0", "end-1c").strip():
+                desc_text.insert("1.0", placeholder)
+                desc_text.configure(text_color=("#9CA3AF", "#6B7280"))  # Gray color for placeholder
+        
+        desc_text.bind("<FocusIn>", on_desc_focus_in)
+        desc_text.bind("<FocusOut>", on_desc_focus_out)
+        
+        # Progress label (hidden initially)
+        progress_label = ctk.CTkLabel(
+            dialog,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color=("#10B981", "#059669")
+        )
+        progress_label.grid(row=3, column=0, pady=(0, 10))
+        
+        # Status label for feedback
+        status_label = ctk.CTkLabel(
+            dialog,
+            text="💡 Tip: Paste a Dynatrace documentation URL and add a description",
+            font=ctk.CTkFont(size=10),
+            text_color=("#6B7280", "#9CA3AF")
+        )
+        status_label.grid(row=4, column=0, pady=(0, 10))
+        
+        # Button frame
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.grid(row=5, column=0, pady=20)
+        
+        def add_link():
+            """Process and add the link to AI knowledge base"""
+            url = url_entry.get().strip()
+            description = desc_text.get("1.0", "end-1c").strip()
+            
+            # Remove placeholder text if it's still there
+            if description == placeholder:
+                description = ""
+            
+            if not url:
+                messagebox.showwarning("Missing URL", "Please enter a URL to add.")
+                url_entry.focus()
+                return
+            
+            # Basic URL validation
+            if not (url.startswith('http://') or url.startswith('https://')):
+                if messagebox.askyesno("Fix URL?", f"URL should start with http:// or https://\n\nAdd https:// to: {url}?"):
+                    url = f"https://{url}"
+                    url_entry.delete(0, "end")
+                    url_entry.insert(0, url)
+                else:
+                    return
+            
+            try:
+                # Show progress
+                progress_label.configure(text="🔄 Fetching content from URL...")
+                status_label.configure(text="")
+                dialog.update()
+                
+                # Add to AI knowledge base
+                success = self.ai_engine.add_link_data(url, title=description)
+                
+                if success:
+                    progress_label.configure(text="✅ Successfully added to knowledge base!")
+                    messagebox.showinfo(
+                        "Link Added Successfully", 
+                        f"🔗 Link added to Hrudhi's knowledge base!\n\n"
+                        f"URL: {url}\n"
+                        f"{'Description: ' + description if description else ''}\n\n"
+                        f"Hrudhi can now answer questions about this content in chat!"
+                    )
+                    dialog.destroy()
+                else:
+                    progress_label.configure(text="❌ Failed to process link")
+                    messagebox.showerror("Error", "Failed to process the link. Please check the URL and try again.")
+            
+            except Exception as e:
+                progress_label.configure(text="❌ Error occurred")
+                messagebox.showerror("Error", f"Failed to process link: {str(e)}")
+        
+        def paste_url():
+            """Paste URL from clipboard"""
+            try:
+                clipboard_content = dialog.clipboard_get()
+                if clipboard_content and (clipboard_content.startswith('http://') or clipboard_content.startswith('https://')):
+                    url_entry.delete(0, "end")
+                    url_entry.insert(0, clipboard_content)
+                    desc_text.focus()
+                else:
+                    messagebox.showinfo("Clipboard", "No valid URL found in clipboard.")
+            except:
+                messagebox.showwarning("Clipboard", "Could not access clipboard.")
+        
+        # Buttons
+        paste_btn = ctk.CTkButton(
+            button_frame,
+            text="📋 Paste URL",
+            command=paste_url,
+            width=100,
+            fg_color=("#8B5CF6", "#7C3AED"),
+            hover_color=("#7C3AED", "#6D28D9")
+        )
+        paste_btn.pack(side="left", padx=(0, 10))
+        
+        add_btn = ctk.CTkButton(
+            button_frame,
+            text="🔗 Add Link",
+            command=add_link,
+            width=120,
+            fg_color=("#3B82F6", "#2563EB"),
+            hover_color=("#2563EB", "#1D4ED8")
+        )
+        add_btn.pack(side="left", padx=(0, 10))
+        
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="❌ Cancel",
+            command=dialog.destroy,
+            width=100,
+            fg_color=("#6B7280", "#4B5563"),
+            hover_color=("#4B5563", "#374151")
+        )
+        cancel_btn.pack(side="left")
+        
+        # Key bindings for better UX
+        def on_enter(event):
+            if event.widget == url_entry:
+                desc_text.focus()
+            elif event.widget == desc_text:
+                add_link()
+        
+        url_entry.bind('<Return>', on_enter)
+        dialog.bind('<Control-Return>', lambda e: add_link())
+        
+        # Focus on URL entry
+        url_entry.focus()
+    
+    def show_ai_unavailable_message(self):
+        """Show message when AI features are not available"""
+        messagebox.showinfo(
+            "AI Unavailable",
+            "🤖 AI chat features are not available.\n\n"
+            "This could be due to:\n"
+            "• Missing AI dependencies\n"
+            "• Model loading failed\n"
+            "• System compatibility issues\n\n"
+            "You can still use all the note-taking features!"
+        )
     
     def create_enhanced_toolbar(self, parent):
         """Create enhanced toolbar with AI features"""
@@ -1214,10 +2054,15 @@ class HrudhiPersonalAssistant:
                     logger.info(f"Loaded {len(self.notes)} notes")
             else:
                 self.create_sample_notes()
+            
+            # Initialize filtered notes with all notes
+            self.filtered_notes = self.notes.copy()
+            
         except Exception as e:
             logger.error(f"Failed to load notes: {e}")
             messagebox.showerror("Error", f"Failed to load notes: {e}")
             self.notes = []
+            self.filtered_notes = []
     
     def save_notes(self):
         """Save notes to JSON file"""
@@ -1299,6 +2144,7 @@ Enable Markdown mode in the toolbar to see live formatting! #markdown #example""
         ]
         
         self.notes = sample_notes
+        self.filtered_notes = self.notes.copy()  # Initialize filtered notes
         self.save_notes()
     
     def import_notes(self):
@@ -1354,6 +2200,46 @@ Enable Markdown mode in the toolbar to see live formatting! #markdown #example""
                     
             except Exception as e:
                 messagebox.showerror("Export Error", f"Failed to export notes: {e}")
+    
+    def open_chat_assistant(self):
+        """Open the AI chat assistant"""
+        try:
+            import subprocess
+            import sys
+            
+            # Check if we have notes to chat about
+            if not self.notes:
+                result = messagebox.askyesno(
+                    "No Notes Found", 
+                    "You don't have any notes saved yet. The chat assistant works best when you have some notes to discuss.\n\nWould you like to continue anyway?"
+                )
+                if not result:
+                    return
+            
+            # Show info message
+            messagebox.showinfo(
+                "Starting Chat Assistant",
+                "🤖 Opening Hrudhi Chat Assistant!\n\n" +
+                "• First time may take 1-2 minutes to download AI models\n" +
+                "• The assistant knows about all your saved notes\n" +
+                "• Ask questions about your content!\n\n" +
+                "A new window will open shortly..."
+            )
+            
+            # Update status and robot mood
+            self.status_var.set("🤖 Starting AI Chat Assistant...")
+            if self.robot:
+                self.robot.set_mood("thinking")
+            
+            # Launch chat assistant
+            script_path = Path(__file__).parent / "hrudhi_chat_assistant.py"
+            subprocess.Popen([sys.executable, str(script_path)])
+            
+            self.status_var.set("🤖 Chat Assistant opened! Check the new window.")
+            
+        except Exception as e:
+            messagebox.showerror("Chat Error", f"Failed to open chat assistant: {e}")
+            self.status_var.set("❌ Failed to open chat assistant")
     
     def run(self):
         """Start the application"""

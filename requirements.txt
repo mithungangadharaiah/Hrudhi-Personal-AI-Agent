@@ -1,11 +1,15 @@
-# Hrudhi Personal Assistant - Enhanced Dependencies
+# Hrudhi Personal Assistant - Enhanced Dependencies with Modern Chat AI
 # Modern Windows 11 UI framework
 customtkinter>=5.2.0
 
-# AI-powered semantic search and summarization
-sentence-transformers>=2.2.0
-transformers>=4.30.0
+# AI Chat and Language Models (Modern Qwen2.5 Support)
+transformers>=4.37.0  # Required for Qwen2.5 support
 torch>=2.0.0
+accelerate>=0.20.0  # For faster model loading and GPU optimization
+safetensors>=0.3.0  # Safe model serialization
+
+# Semantic search and embeddings  
+sentence-transformers>=2.2.0
 scikit-learn>=1.3.0
 numpy>=1.21.0
 
@@ -16,13 +20,19 @@ pillow>=10.0.0
 # Text processing and markdown
 markdown>=3.5.0
 pygments>=2.16.0
+beautifulsoup4>=4.12.0  # HTML parsing for link content extraction
 
 # System integration and utilities
 darkdetect>=0.8.0
+requests>=2.31.0  # For model downloads
 
 # Development and packaging tools
 pyinstaller>=6.0.0
 setuptools>=69.0.0
 wheel>=0.42.0
+
+# Performance optimization (optional but recommended)
+optimum>=1.14.0  # Model optimization
+tokenizers>=0.15.0  # Fast tokenization
 
 # Note: tkinter is included with Python standard library

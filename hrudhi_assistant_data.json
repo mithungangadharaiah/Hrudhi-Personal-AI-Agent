@@ -1,15 +1,39 @@
 [
   {
-    "id": "b685f836-08de-4e4f-81ae-27d4ed877446",
-    "title": "deployment",
-    "content": "1. System Accessibility\nDynatrace Setup:\n\tMonitor PAS-X application servers, DB (Oracle), and Active Directory.\n\tDefine SLOs for login success rate and auth response times.\nImplementation:\n\tCapture failed login attempts (via logs).\n\tAlert when wltuser DB account lock is detected or DB listener is down.\n\tUse Synthetic tests to continuously test PAS-X login availability.\n\n====================================================================================\n2. System Performance\nDynatrace Setup:\n\tFull-stack monitoring on PAS-X client (Citrix), DB, and application servers.\n\tUse user session monitoring (DEM) to measure client-side performance.\nImplementation:\n\tDetect slowness trends per Citrix server and automatically correlate with CPU, memory, or network latency.\n\tSmartscape topology will show whether DB or app tier is bottlenecked.\n\tDefine dashboards with KPIs for client start-up time and transaction response times.\n\n====================================================================================\n3. System Functionality (Printing)\nDynatrace Setup:\n\tMonitor MES print services and printers via process monitoring and logs.\nImplementation:\n\tCustom log ingestion for MES error messages (label not printed, print service unavailable).\n\tProcess availability monitoring for print services.\n\tAlerts when printer queues are stuck or services crash.\n\n====================================================================================\n4. System Integration (SAP & L2)\nDynatrace Setup:\n\tUse distributed tracing for message flow between SAP ↔ MES ↔ L2.\n\tIngest SAP IDOC logs and adapter service logs into Grail.\nImplementation:\n\tBuild DQL queries to track failed/reprocessed IDOCs.\n\tMonitor adapter services for availability and error log frequency.\n\tSet SLOs for successful message transfer rates.",
-    "summary": "Dynatrace provides full-stack monitoring on PAS-X client (Citrix), DB, and application servers. Monitor MES print services and printers via process monitoring and logs. Use distributed tracing for message flow between SAP and MES.",
-    "created_at": "2025-09-20T00:31:09.678264",
-    "updated_at": "2025-09-20T00:35:19.433540",
+    "id": "ef7cbdb2-7f19-4c19-809a-e7b51c88b1c7",
+    "title": "Untitled",
+    "content": "✅ Problem Solved:\nIssue: AI buttons showed \"Unavailable\" even though models were loading\nRoot Cause: The UI was checking a global AI_AVAILABLE flag at class initialization time, but the actual model loading happened later in the AIEngine constructor\nSolution: Added instance-level self.ai_available that checks the actual state of ai_engine.chat_pipeline after initialization\n✅ What's Now Working:\n🤖 AI Chat Button: Now shows \"🤖 AI Chat\" and is enabled\n🧠 Teach AI Button: Now shows \"🧠 Teach AI\" and is enabled\n🔗 Add Link Button: Now shows \"🔗 Add Link\" and is enabled\n🚀 Smart Fallback: Uses GPT-2 initially, can upgrade to larger models when available\n💬 Full Chat Functionality: You can now chat with the AI about your notes!\n🔄 Model Loading Strategy:\nGPT-2 (loaded first) - Small, fast, always available",
+    "summary": "",
+    "created_at": "2025-09-20T01:32:45.720364",
+    "updated_at": "2025-09-20T01:33:24.666018",
     "tags": [],
     "color": "#6366F1",
     "pinned": true,
-    "is_markdown": true
+    "is_markdown": false
+  },
+  {
+    "id": "3249be56-f5e3-44b3-94c8-754e3730bc7c",
+    "title": " How to Use:",
+    "content": "\nStart the app: Double-click START_HRUDHI.bat or run the Python file\nToggle Chat: Click \"🤖 AI Chat\" to switch between notes and chat modes\nChat with AI: Ask about your notes, get summaries, have conversations\nTeach AI: Click \"🧠 Teach AI\" to add new learning data\nAdd Links: Click \"🔗 Add Link\" to share URLs for the AI to learn from\nYour integrated Hrudhi Personal Assistant is now fully functional with working AI capabilities! 🚀🤖",
+    "summary": "",
+    "created_at": "2025-09-20T01:33:24.665758",
+    "updated_at": "2025-09-20T10:33:03.505987",
+    "tags": [],
+    "color": "#6366F1",
+    "pinned": true,
+    "is_markdown": false
+  },
+  {
+    "id": "c329f709-a6d6-4c26-b3ed-4afc65d39653",
+    "title": "APIKeys",
+    "content": "Here are some examples you can safely use in testing, docs, or mock configs:\n\nGeneric random style\n\n1234567890abcdef1234567890abcdef\n\n\nUUID style (common in some APIs)\n\n550e8400-e29b-41d4-a716-446655440000\n\n\nGoogle API style\n\nAIzaSyA-EXAMPLEKEY1234567890abcdefghi\n\n\nStripe style\n\nsk_test_4eC39HqLyjWDarjtT1zdp7dc\n\n\nDynatrace API style (since you work with Dynatrace 😉)\n\ndt0c01.EXAMPLEabcdefghijklmno123456789.PqRstuVWxyZaBCdefGhiJKlmNoPQrsTuvWXyZ",
+    "summary": "Here are some examples you can safely use in testing, docs, or mock configs: Generic random style 1234567890abcdef12345678 90abcdef UUID style (common in some APIs) 550e8400-e29b-41d4-a716-446655440000 Google API style AIzaSyA-EXAMPLEKEY123456789. Stripe style sk_test_4eC39HqLyjWD",
+    "created_at": "2025-09-19T23:39:42.705612",
+    "updated_at": "2025-09-20T10:54:19.238497",
+    "tags": [],
+    "color": "#FFE66D",
+    "pinned": true,
+    "is_markdown": false
   },
   {
     "id": "2276ab6f-29ba-4f5d-94a4-242fdc6881c2",
@@ -17,10 +41,22 @@
     "content": "1. System Accessibility\nDynatrace Setup:\n\tMonitor PAS-X application servers, DB (Oracle), and Active Directory.\n\tDefine SLOs for login success rate and auth response times.\nImplementation:\n\tCapture failed login attempts (via logs).\n\tAlert when wltuser DB account lock is detected or DB listener is down.\n\tUse Synthetic tests to continuously test PAS-X login availability.\n\n====================================================================================\n2. System Performance\nDynatrace Setup:\n\tFull-stack monitoring on PAS-X client (Citrix), DB, and application servers.\n\tUse user session monitoring (DEM) to measure client-side performance.\nImplementation:\n\tDetect slowness trends per Citrix server and automatically correlate with CPU, memory, or network latency.\n\tSmartscape topology will show whether DB or app tier is bottlenecked.\n\tDefine dashboards with KPIs for client start-up time and transaction response times.\n\n====================================================================================\n3. System Functionality (Printing)\nDynatrace Setup:\n\tMonitor MES print services and printers via process monitoring and logs.\nImplementation:\n\tCustom log ingestion for MES error messages (label not printed, print service unavailable).\n\tProcess availability monitoring for print services.\n\tAlerts when printer queues are stuck or services crash.\n\n====================================================================================\n4. System Integration (SAP & L2)\nDynatrace Setup:\n\tUse distributed tracing for message flow between SAP ↔ MES ↔ L2.\n\tIngest SAP IDOC logs and adapter service logs into Grail.\nImplementation:\n\tBuild DQL queries to track failed/reprocessed IDOCs.\n\tMonitor adapter services for availability and error log frequency.\n\tSet SLOs for successful message transfer rates.",
     "summary": "",
     "created_at": "2025-09-19T23:36:57.539144",
-    "updated_at": "2025-09-19T23:40:24.809819",
+    "updated_at": "2025-09-20T10:33:07.385344",
     "tags": [],
     "color": "#FFE66D",
-    "pinned": false,
+    "pinned": true,
+    "is_markdown": false
+  },
+  {
+    "id": "dee48cb0-f720-4317-b491-8434f53300c6",
+    "title": "testError",
+    "content": "ValueError: list.remove(x): x not in list\nException in Tkinter callback\nTraceback (most recent call last):\n  File \"C:\\Python313\\Lib\\tkinter\\__init__.py\", line 2068, in __call__\n    return self.func(*args)\n           ~~~~~~~~~^^^^^^^\n  File \"C:\\Users\\mithun.gangadharaiah\\OneDrive - Dynatrace\\Documents\\GitHub\\Hrudhi-Personal-AI-Agent\\.venv\\Lib\\site-packages\\customtkinter\\windows\\widgets\\ctk_button.py\", line 554, in _clicked\n    self._command()\n    ~~~~~~~~~~~~~^^\n  File \"C:\\Users\\mithun.gangadharaiah\\OneDrive - Dynatrace\\Documents\\GitHub\\Hrudhi-Personal-AI-Agent\\professional_sticky_notes.py\", line 430, in delete_current_note\n    self.notes.remove(self.selected_note)\n    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\nValueError: list.remove(x): x not in list\nException in Tkinter callback\nTraceback (most recent call last):\n  File \"C:\\Python313\\Lib\\tkinter\\__init__.py\", line 2068, in __call__\n    return self.func(*args)\n           ~~~~~~~~~^^^^^^^\n  File \"C:\\Users\\mithun.gangadharaiah\\OneDrive - Dynatrace\\Documents\\GitHub\\Hrudhi-Personal-AI-Agent\\.venv\\Lib\\site-packages\\customtkinter\\windows\\widgets\\ctk_button.py\", line 554, in _clicked\n    self._command()\n    ~~~~~~~~~~~~~^^\n  File \"C:\\Users\\mithun.gangadharaiah\\OneDrive - Dynatrace\\Documents\\GitHub\\Hrudhi-Personal-AI-Agent\\professional_sticky_notes.py\", line 430, in delete_current_note\n    self.notes.remove(self.selected_note)\n    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\nValueError: list.remove(x): x not in list",
+    "summary": "",
+    "created_at": "2025-09-19T23:37:30.586214",
+    "updated_at": "2025-09-20T10:33:09.034849",
+    "tags": [],
+    "color": "#FFE66D",
+    "pinned": true,
     "is_markdown": false
   },
   {
@@ -29,10 +65,10 @@
     "content": "Here are some examples you can safely use in testing, docs, or mock configs:\n\nGeneric random style\n\n1234567890abcdef1234567890abcdef\n\n\nUUID style (common in some APIs)\n\n550e8400-e29b-41d4-a716-446655440000\n\n\nGoogle API style\n\nAIzaSyA-EXAMPLEKEY1234567890abcdefghi\n\n\nStripe style\n\nsk_test_4eC39HqLyjWDarjtT1zdp7dc\n\n\nDynatrace API style (since you work with Dynatrace 😉)\n\ndt0c01.EXAMPLEabcdefghijklmno123456789.PqRstuVWxyZaBCdefGhiJKlmNoPQrsTuvWXyZ",
     "summary": "",
     "created_at": "2025-09-19T23:39:42.705612",
-    "updated_at": "2025-09-19T23:43:12.266618",
+    "updated_at": "2025-09-20T10:33:05.722152",
     "tags": [],
     "color": "#FFE66D",
-    "pinned": false,
+    "pinned": true,
     "is_markdown": false
   }
 ]
